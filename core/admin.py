@@ -7,6 +7,7 @@ from core.models import (
     Teacher,
     Subject,
     ClassDivision,
+    TimeGridConfig,
     TimeSlot,
     ElectiveGroup,
     CourseRequirement,
@@ -53,6 +54,11 @@ class SubjectAdmin(admin.ModelAdmin):
 class ClassDivisionAdmin(admin.ModelAdmin):
     list_display = ("name", "section", "department", "institution")
     list_filter = ("institution", "department")
+
+
+@admin.register(TimeGridConfig)
+class TimeGridConfigAdmin(admin.ModelAdmin):
+    list_display = ("institution", "periods_per_day", "period_duration_minutes", "day_start_time")
 
 
 @admin.register(TimeSlot)

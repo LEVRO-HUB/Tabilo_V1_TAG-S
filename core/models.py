@@ -189,6 +189,60 @@ class TimeSlot(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# Time grid configuration (Phase 2): drives TimeSlot auto-generation
+# ---------------------------------------------------------------------------
+
+class TimeGridConfig(models.Model):
+    """
+    One row per institution describing how to auto-generate its TimeSlot
+    grid (core/services/timegrid.py) instead of hardcoding period times.
+
+    `breaks` is a flexible list of dicts, each shaped
+    {"after_period": <1..periods_per_day>, "duration_minutes": <int>},
+    meaning "insert a break of this length after teaching period N".
+    Multiple breaks (e.g. a short recess and a lunch break) are supported.
+    """
+    institution = models.OneToOneField(Institution, on_delete=models.CASCADE, related_name="time_grid_config")
+
+    periods_per_day = models.PositiveSmallIntegerField()
+    period_duration_minutes = models.PositiveSmallIntegerField()
+    day_start_time = models.TimeField()
+    breaks = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=Q(periods_per_day__gt=0), name="timegridconfig_periods_positive"),
+            models.CheckConstraint(
+                condition=Q(period_duration_minutes__gt=0), name="timegridconfig_duration_positive"
+            ),
+        ]
+
+    def __str__(self):
+        return f"TimeGridConfig({self.institution.name})"
+
+    def clean(self):
+        if not isinstance(self.breaks, list):
+            raise ValidationError("breaks must be a list.")
+        seen_after_periods = set()
+        for entry in self.breaks:
+            if not isinstance(entry, dict) or set(entry) != {"after_period", "duration_minutes"}:
+                raise ValidationError(
+                    "Each break must be a dict with exactly 'after_period' and 'duration_minutes' keys."
+                )
+            after_period = entry["after_period"]
+            duration_minutes = entry["duration_minutes"]
+            if not isinstance(after_period, int) or not (1 <= after_period <= self.periods_per_day):
+                raise ValidationError(
+                    f"break after_period={after_period!r} must be an int between 1 and periods_per_day."
+                )
+            if not isinstance(duration_minutes, int) or duration_minutes <= 0:
+                raise ValidationError(f"break duration_minutes={duration_minutes!r} must be a positive int.")
+            if after_period in seen_after_periods:
+                raise ValidationError(f"Duplicate break after_period={after_period}.")
+            seen_after_periods.add(after_period)
+
+
+# ---------------------------------------------------------------------------
 # Elective parallelism support
 # ---------------------------------------------------------------------------
 
