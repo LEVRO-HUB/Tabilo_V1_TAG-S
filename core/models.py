@@ -142,6 +142,27 @@ class Subject(models.Model):
         return f"{self.name} ({self.code})"
 
 
+class TeacherSubjectEligibility(models.Model):
+    """
+    Which teachers are qualified to teach which subjects. Consulted by the
+    Phase 3 solver only for CourseRequirements with no pre-assigned teacher.
+    """
+    institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="subject_eligibilities")
+    teacher = models.ForeignKey(Teacher, on_delete=models.CASCADE, related_name="subject_eligibilities")
+    subject = models.ForeignKey(Subject, on_delete=models.CASCADE, related_name="eligible_teachers")
+
+    class Meta:
+        ordering = ["institution", "teacher", "subject"]
+        unique_together = ("teacher", "subject")
+        indexes = [
+            models.Index(fields=["institution", "teacher"]),
+            models.Index(fields=["institution", "subject"]),
+        ]
+
+    def __str__(self):
+        return f"{self.teacher} -> {self.subject}"
+
+
 class ClassDivision(models.Model):
     institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="class_divisions")
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name="class_divisions")
@@ -364,16 +385,17 @@ class TimetableCell(models.Model):
     One occupied (class_division, time_slot) cell in a term's timetable.
     Hard constraints are enforced at the DB layer:
       - unique (term, class_division, time_slot) among non-elective cells
-        -> no accidental class double-booking
-      - unique (term, class_division, time_slot, subject) among elective
-        cells -> parallel elective sections (e.g. OE501A / OE501B) are
-        allowed to share a class_division + time_slot, but the same
-        elective subject can't occupy it twice
+        ("no_double_booking_non_elective") -> no accidental class double-booking
+      - unique (term, class_division, time_slot, subject), unconditional
+        ("no_duplicate_subject_cell") -> for non-elective cells this is
+        already implied by the constraint above; for elective cells (where
+        several rows legitimately share a class_division + time_slot) it's
+        what stops the same elective subject from occupying that slot twice
       - unique (term, teacher, time_slot)          -> no teacher double-booking
 
     `elective_group` is denormalized from course_requirement.elective_group
     (rather than joined through course_requirement) because course_requirement
-    is SET_NULL on delete — if the two constraints above relied on that join,
+    is SET_NULL on delete — if the constraints above relied on that join,
     a deleted CourseRequirement would silently reclassify an already-placed
     elective cell as "non-elective" and could collide with its own sibling.
     """
@@ -401,12 +423,11 @@ class TimetableCell(models.Model):
             models.UniqueConstraint(
                 fields=["term", "class_division", "time_slot"],
                 condition=Q(elective_group__isnull=True),
-                name="timetablecell_unique_class_slot_non_elective",
+                name="no_double_booking_non_elective",
             ),
             models.UniqueConstraint(
                 fields=["term", "class_division", "time_slot", "subject"],
-                condition=Q(elective_group__isnull=False),
-                name="timetablecell_unique_class_slot_subject_elective",
+                name="no_duplicate_subject_cell",
             ),
             models.UniqueConstraint(
                 fields=["term", "teacher", "time_slot"],
@@ -435,3 +456,44 @@ class TimetableCell(models.Model):
 
     def __str__(self):
         return f"{self.class_division} @ {self.time_slot} — {self.subject}"
+
+
+# ---------------------------------------------------------------------------
+# Solver run tracking (Phase 3)
+# ---------------------------------------------------------------------------
+
+class SolverRun(models.Model):
+    """
+    One invocation of the Phase 3 CP-SAT feasibility solver for a term.
+    Tracks status/timing/errors so an async (Celery) solve can be observed
+    without the caller having to hold a connection open for it.
+    """
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    STATUS_CHOICES = [
+        (PENDING, "Pending"),
+        (RUNNING, "Running"),
+        (SUCCESS, "Success"),
+        (FAILED, "Failed"),
+    ]
+
+    institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="solver_runs")
+    term = models.ForeignKey(AcademicTerm, on_delete=models.CASCADE, related_name="solver_runs")
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=PENDING)
+    celery_task_id = models.CharField(max_length=255, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["institution", "term"]),
+            models.Index(fields=["status"]),
+        ]
+
+    def __str__(self):
+        return f"SolverRun({self.term.name}, {self.status})"

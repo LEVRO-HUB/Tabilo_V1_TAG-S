@@ -6,6 +6,7 @@ from core.models import (
     AcademicTerm,
     Teacher,
     Subject,
+    TeacherSubjectEligibility,
     ClassDivision,
     TimeGridConfig,
     TimeSlot,
@@ -13,6 +14,7 @@ from core.models import (
     CourseRequirement,
     FacultyDutyBlock,
     TimetableCell,
+    SolverRun,
 )
 
 
@@ -48,6 +50,12 @@ class SubjectAdmin(admin.ModelAdmin):
     list_display = ("name", "code", "department", "institution", "is_elective")
     list_filter = ("institution", "department", "is_elective")
     search_fields = ("name", "code")
+
+
+@admin.register(TeacherSubjectEligibility)
+class TeacherSubjectEligibilityAdmin(admin.ModelAdmin):
+    list_display = ("teacher", "subject", "institution")
+    list_filter = ("institution",)
 
 
 @admin.register(ClassDivision)
@@ -89,3 +97,9 @@ class FacultyDutyBlockAdmin(admin.ModelAdmin):
 class TimetableCellAdmin(admin.ModelAdmin):
     list_display = ("class_division", "time_slot", "subject", "teacher", "term", "elective_group", "is_locked")
     list_filter = ("institution", "term", "is_locked")
+
+
+@admin.register(SolverRun)
+class SolverRunAdmin(admin.ModelAdmin):
+    list_display = ("status", "institution", "term", "created_at")
+    list_filter = ("institution", "term", "status")
