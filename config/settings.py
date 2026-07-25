@@ -93,6 +93,14 @@ DATABASES = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# --- Celery: async solver runs (Phase 3) -------------------------------------
+# Redis does not need to be running for local dev unless you're actually
+# testing the async path — `manage.py run_solver <term_id> --sync` runs the
+# solver in-process without touching Celery/Redis at all.
+
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
+
 # --- Password validation ------------------------------------------------------
 
 AUTH_PASSWORD_VALIDATORS = [
