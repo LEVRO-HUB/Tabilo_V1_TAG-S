@@ -87,5 +87,5 @@ class FacultyDutyBlockAdmin(admin.ModelAdmin):
 
 @admin.register(TimetableCell)
 class TimetableCellAdmin(admin.ModelAdmin):
-    list_display = ("class_division", "time_slot", "subject", "teacher", "term", "is_locked")
+    list_display = ("class_division", "time_slot", "subject", "teacher", "term", "elective_group", "is_locked")
     list_filter = ("institution", "term", "is_locked")

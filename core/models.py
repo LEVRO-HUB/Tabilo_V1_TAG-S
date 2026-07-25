@@ -363,8 +363,19 @@ class TimetableCell(models.Model):
     """
     One occupied (class_division, time_slot) cell in a term's timetable.
     Hard constraints are enforced at the DB layer:
-      - unique (term, class_division, time_slot)  -> no class double-booking
+      - unique (term, class_division, time_slot) among non-elective cells
+        -> no accidental class double-booking
+      - unique (term, class_division, time_slot, subject) among elective
+        cells -> parallel elective sections (e.g. OE501A / OE501B) are
+        allowed to share a class_division + time_slot, but the same
+        elective subject can't occupy it twice
       - unique (term, teacher, time_slot)          -> no teacher double-booking
+
+    `elective_group` is denormalized from course_requirement.elective_group
+    (rather than joined through course_requirement) because course_requirement
+    is SET_NULL on delete — if the two constraints above relied on that join,
+    a deleted CourseRequirement would silently reclassify an already-placed
+    elective cell as "non-elective" and could collide with its own sibling.
     """
     institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="timetable_cells")
     term = models.ForeignKey(AcademicTerm, on_delete=models.CASCADE, related_name="timetable_cells")
@@ -376,6 +387,9 @@ class TimetableCell(models.Model):
     course_requirement = models.ForeignKey(
         CourseRequirement, on_delete=models.SET_NULL, null=True, blank=True, related_name="timetable_cells"
     )
+    elective_group = models.ForeignKey(
+        ElectiveGroup, on_delete=models.SET_NULL, null=True, blank=True, related_name="timetable_cells"
+    )
 
     # True for cells pinned by an admin or locked as part of a contiguous
     # lab block — protects them from being reshuffled during regeneration.
@@ -383,9 +397,21 @@ class TimetableCell(models.Model):
 
     class Meta:
         ordering = ["institution", "term", "class_division", "time_slot"]
-        unique_together = [
-            ("term", "class_division", "time_slot"),
-            ("term", "teacher", "time_slot"),
+        constraints = [
+            models.UniqueConstraint(
+                fields=["term", "class_division", "time_slot"],
+                condition=Q(elective_group__isnull=True),
+                name="timetablecell_unique_class_slot_non_elective",
+            ),
+            models.UniqueConstraint(
+                fields=["term", "class_division", "time_slot", "subject"],
+                condition=Q(elective_group__isnull=False),
+                name="timetablecell_unique_class_slot_subject_elective",
+            ),
+            models.UniqueConstraint(
+                fields=["term", "teacher", "time_slot"],
+                name="timetablecell_unique_teacher_slot",
+            ),
         ]
         indexes = [
             models.Index(fields=["institution", "term"]),
@@ -397,8 +423,15 @@ class TimetableCell(models.Model):
         # Belt-and-suspenders: catch cross-tenant mismatches before they
         # ever reach the DB constraints above.
         related = [self.term, self.class_division, self.time_slot, self.subject, self.teacher]
+        if self.elective_group_id is not None:
+            related.append(self.elective_group)
         if any(obj.institution_id != self.institution_id for obj in related):
             raise ValidationError("All related records must belong to the same institution as this cell.")
+
+        if self.course_requirement_id is not None and self.course_requirement.elective_group_id != self.elective_group_id:
+            raise ValidationError(
+                "elective_group must match the originating course_requirement's elective_group."
+            )
 
     def __str__(self):
         return f"{self.class_division} @ {self.time_slot} — {self.subject}"
