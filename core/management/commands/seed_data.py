@@ -1,5 +1,5 @@
 """
-Tabilo — Phase 1 seed data.
+Tabilo — seed data.
 
 Populates two realistic tenants locally:
   1. A School Edition tenant (Greenwood Public School) — Mon-Sat weekly grid,
@@ -8,7 +8,13 @@ Populates two realistic tenants locally:
      — Day 1-6 rotation, department structure, electives, and a locked
      contiguous lab block.
 
-Idempotent: safe to re-run, uses get_or_create throughout.
+Org structure (institutions, departments, teachers, subjects, divisions) is
+seeded with plain get_or_create calls. Time grids and course requirements go
+through the Phase 2 services (core/services/timegrid.py,
+core/services/ingestion.py) instead of manual loops, so this command doubles
+as an end-to-end proof that pipeline works, not just unit tests in isolation.
+
+Idempotent: safe to re-run.
 
 Usage:
     python manage.py seed_data
@@ -26,11 +32,13 @@ from core.models import (
     Teacher,
     Subject,
     ClassDivision,
+    TimeGridConfig,
     TimeSlot,
     ElectiveGroup,
-    CourseRequirement,
     FacultyDutyBlock,
 )
+from core.services.ingestion import ingest_course_requirement
+from core.services.timegrid import generate_time_slots
 
 
 class Command(BaseCommand):
@@ -104,39 +112,36 @@ class Command(BaseCommand):
             )
             divisions[section] = division
 
-        # Time grid: Mon(1)-Sat(6), 7 periods/day, one short break after P4.
-        period_starts = [
-            (1, datetime.time(9, 0), datetime.time(9, 45), False),
-            (2, datetime.time(9, 45), datetime.time(10, 30), False),
-            (3, datetime.time(10, 30), datetime.time(11, 15), False),
-            (4, datetime.time(11, 15), datetime.time(12, 0), False),
-            (5, datetime.time(12, 0), datetime.time(12, 30), True),  # lunch break
-            (6, datetime.time(12, 30), datetime.time(13, 15), False),
-            (7, datetime.time(13, 15), datetime.time(14, 0), False),
-        ]
-        for day in range(1, 7):  # Mon..Sat
-            for period_number, start, end, is_break in period_starts:
-                TimeSlot.objects.get_or_create(
-                    institution=school,
-                    day_identifier=day,
-                    period_number=period_number,
-                    defaults={"start_time": start, "end_time": end, "is_break": is_break},
-                )
+        # Time grid: Mon(1)-Sat(6), 6 teaching periods/day, one 30-min break
+        # after period 4 (same 9:00-14:00 grid as Phase 1's hardcoded slots).
+        TimeGridConfig.objects.get_or_create(
+            institution=school,
+            defaults={
+                "periods_per_day": 6,
+                "period_duration_minutes": 45,
+                "day_start_time": datetime.time(9, 0),
+                "breaks": [{"after_period": 4, "duration_minutes": 30}],
+            },
+        )
+        generate_time_slots(school)
 
         # Course requirements: same 5 core subjects for every division, 6/wk each.
+        # Teacher assignment is index-based (not hash(subject_name)-based) so
+        # re-running seed_data is actually deterministic — Python's str hash
+        # is salted per-process by default and would otherwise reshuffle
+        # teachers on every rerun.
+        teacher_list = list(teachers.values())
         for division in divisions.values():
-            for subject_name, subject in subjects.items():
-                CourseRequirement.objects.get_or_create(
+            for idx, subject in enumerate(subjects.values()):
+                ingest_course_requirement(
                     institution=school,
                     term=term,
                     class_division=division,
                     subject=subject,
-                    defaults={
-                        "teacher": list(teachers.values())[hash(subject_name) % len(teachers)],
-                        "periods_per_week": 6,
-                        "is_lab": False,
-                        "block_size": 1,
-                    },
+                    periods_per_week=6,
+                    teacher=teacher_list[idx % len(teacher_list)],
+                    is_lab=False,
+                    block_size=1,
                 )
 
     # ------------------------------------------------------------------
@@ -202,59 +207,51 @@ class Command(BaseCommand):
             section="A",
         )
 
-        # Time grid: Day 1-6 rotation, 6 periods/day, mid-day break after P3.
-        period_starts = [
-            (1, datetime.time(9, 0), datetime.time(10, 0), False),
-            (2, datetime.time(10, 0), datetime.time(11, 0), False),
-            (3, datetime.time(11, 0), datetime.time(12, 0), False),
-            (4, datetime.time(12, 0), datetime.time(13, 0), True),  # lunch break
-            (5, datetime.time(13, 0), datetime.time(14, 0), False),
-            (6, datetime.time(14, 0), datetime.time(15, 0), False),
-        ]
-        for day in range(1, 7):  # Day 1..Day 6
-            for period_number, start, end, is_break in period_starts:
-                TimeSlot.objects.get_or_create(
-                    institution=college,
-                    day_identifier=day,
-                    period_number=period_number,
-                    defaults={"start_time": start, "end_time": end, "is_break": is_break},
-                )
+        # Time grid: Day 1-6 rotation, 5 teaching periods/day, 1-hr lunch
+        # break after period 3 (same 9:00-15:00 grid as Phase 1's hardcoded
+        # slots — the break has the same 60-min duration as a period here).
+        TimeGridConfig.objects.get_or_create(
+            institution=college,
+            defaults={
+                "periods_per_day": 5,
+                "period_duration_minutes": 60,
+                "day_start_time": datetime.time(9, 0),
+                "breaks": [{"after_period": 3, "duration_minutes": 60}],
+            },
+        )
+        generate_time_slots(college)
 
         # Elective parallelism: both open electives share one group/slot pool.
         elective_group, _ = ElectiveGroup.objects.get_or_create(
             institution=college, term=term, name="Open Elective Pool - Sem 5"
         )
 
-        CourseRequirement.objects.get_or_create(
+        ingest_course_requirement(
             institution=college, term=term, class_division=division, subject=subjects["CSE301"],
-            defaults={"teacher": teachers["Dr. Lakshmi Venkat"], "periods_per_week": 4, "is_lab": False, "block_size": 1},
+            teacher=teachers["Dr. Lakshmi Venkat"], periods_per_week=4, is_lab=False, block_size=1,
         )
-        CourseRequirement.objects.get_or_create(
+        ingest_course_requirement(
             institution=college, term=term, class_division=division, subject=subjects["CSE302"],
-            defaults={"teacher": teachers["Prof. Arjun Balaji"], "periods_per_week": 4, "is_lab": False, "block_size": 1},
+            teacher=teachers["Prof. Arjun Balaji"], periods_per_week=4, is_lab=False, block_size=1,
         )
         # Contiguous lab locking: 6 hrs/week as two 3-hr blocks (e.g. P1-3 or P4-6).
-        CourseRequirement.objects.get_or_create(
+        ingest_course_requirement(
             institution=college, term=term, class_division=division, subject=subjects["CSE301L"],
-            defaults={"teacher": teachers["Dr. Meera Subramaniam"], "periods_per_week": 6, "is_lab": True, "block_size": 3},
+            teacher=teachers["Dr. Meera Subramaniam"], periods_per_week=6, is_lab=True, block_size=3,
         )
-        CourseRequirement.objects.get_or_create(
+        ingest_course_requirement(
             institution=college, term=term, class_division=division, subject=subjects["ECE304"],
-            defaults={"teacher": teachers["Prof. Vignesh Raghavan"], "periods_per_week": 3, "is_lab": False, "block_size": 1},
+            teacher=teachers["Prof. Vignesh Raghavan"], periods_per_week=3, is_lab=False, block_size=1,
         )
-        CourseRequirement.objects.get_or_create(
+        ingest_course_requirement(
             institution=college, term=term, class_division=division, subject=subjects["OE501A"],
-            defaults={
-                "teacher": teachers["Dr. Kavitha Shankar"], "periods_per_week": 2, "is_lab": False,
-                "block_size": 1, "elective_group": elective_group,
-            },
+            teacher=teachers["Dr. Kavitha Shankar"], periods_per_week=2, is_lab=False,
+            block_size=1, elective_group=elective_group,
         )
-        CourseRequirement.objects.get_or_create(
+        ingest_course_requirement(
             institution=college, term=term, class_division=division, subject=subjects["OE501B"],
-            defaults={
-                "teacher": teachers["Prof. Vignesh Raghavan"], "periods_per_week": 2, "is_lab": False,
-                "block_size": 1, "elective_group": elective_group,
-            },
+            teacher=teachers["Prof. Vignesh Raghavan"], periods_per_week=2, is_lab=False,
+            block_size=1, elective_group=elective_group,
         )
 
         # Protected non-teaching windows (paper valuation, invigilation, etc.)
