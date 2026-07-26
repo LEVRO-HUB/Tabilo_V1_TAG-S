@@ -22,6 +22,7 @@ Design notes:
   placing every requirement in a group into the same TimeSlot.
 """
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q, F
@@ -52,6 +53,33 @@ class Institution(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.institution_type})"
+
+
+# ---------------------------------------------------------------------------
+# API access (Phase 5b): who can log in, and which institution they see
+# ---------------------------------------------------------------------------
+
+class UserProfile(models.Model):
+    """
+    Ties a Django auth User to exactly one Institution and a role, so the
+    REST API (core/api/) can scope every request without the view layer
+    ever touching institution ids directly -- see core/api/permissions.py.
+    """
+    ADMIN = "ADMIN"
+    COORDINATOR = "COORDINATOR"
+    TEACHER = "TEACHER"
+    ROLE_CHOICES = [
+        (ADMIN, "Admin"),
+        (COORDINATOR, "Coordinator"),
+        (TEACHER, "Teacher"),
+    ]
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
+    institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="user_profiles")
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=COORDINATOR)
+
+    def __str__(self):
+        return f"{self.user.get_username()} ({self.role}, {self.institution.name})"
 
 
 # ---------------------------------------------------------------------------

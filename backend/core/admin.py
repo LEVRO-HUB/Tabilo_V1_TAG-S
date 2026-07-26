@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from core.models import (
     Institution,
+    UserProfile,
     Department,
     AcademicTerm,
     Teacher,
@@ -25,6 +26,12 @@ class InstitutionAdmin(admin.ModelAdmin):
     list_display = ("name", "institution_type", "cycle_length")
     list_filter = ("institution_type",)
     search_fields = ("name",)
+
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    list_display = ("user", "institution", "role")
+    list_filter = ("institution", "role")
 
 
 @admin.register(Department)
