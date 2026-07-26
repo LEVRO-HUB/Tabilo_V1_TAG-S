@@ -57,3 +57,15 @@ export function getTimetableGrid(token, termId, classDivisionId) {
   const params = new URLSearchParams({ term_id: termId, class_division_id: classDivisionId })
   return request(`/api/timetable-grid/?${params}`, { token })
 }
+
+export function triggerSolverRun(token, termId, feasibilityOnly = false) {
+  return request('/api/solver-runs/', {
+    method: 'POST',
+    token,
+    body: { term_id: termId, feasibility_only: feasibilityOnly },
+  })
+}
+
+export function getSolverRun(token, runId) {
+  return request(`/api/solver-runs/${runId}/`, { token })
+}

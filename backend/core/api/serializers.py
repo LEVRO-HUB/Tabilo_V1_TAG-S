@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from core.models import AcademicTerm, ClassDivision, Institution
+from core.models import AcademicTerm, ClassDivision, Institution, SolverRun
 
 
 class InstitutionSerializer(serializers.ModelSerializer):
@@ -21,3 +21,18 @@ class ClassDivisionSerializer(serializers.ModelSerializer):
     class Meta:
         model = ClassDivision
         fields = ["id", "name", "section", "department"]
+
+
+class SolverRunSerializer(serializers.ModelSerializer):
+    """
+    GET /api/solver-runs/<id>/ response shape -- the frontend polls this.
+    status is one of SolverRun.STATUS_CHOICES (PENDING/RUNNING/SUCCESS/
+    FAILED); SUCCESS and FAILED are the only terminal values.
+    """
+
+    class Meta:
+        model = SolverRun
+        fields = [
+            "id", "status", "trigger", "objective_value", "error_message",
+            "created_at", "started_at", "finished_at",
+        ]

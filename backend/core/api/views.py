@@ -16,8 +16,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.api.permissions import InstitutionScopedMixin
-from core.api.serializers import AcademicTermSerializer, ClassDivisionSerializer, InstitutionSerializer
-from core.models import AcademicTerm, ClassDivision, TimeSlot, TimetableCell
+from core.api.serializers import (
+    AcademicTermSerializer,
+    ClassDivisionSerializer,
+    InstitutionSerializer,
+    SolverRunSerializer,
+)
+from core.models import AcademicTerm, ClassDivision, SolverRun, TimeSlot, TimetableCell
+from core.tasks import run_feasibility_solver
 
 
 class LoginView(ObtainAuthToken):
@@ -129,3 +135,43 @@ class TimetableGridView(InstitutionScopedMixin, APIView):
             },
             "slots": slots_payload,
         })
+
+
+class SolverRunTriggerView(InstitutionScopedMixin, APIView):
+    """
+    POST /api/solver-runs/ {"term_id": <id>, "feasibility_only": false}
+
+    Enqueues core.tasks.run_feasibility_solver as a real Celery task via
+    .delay() -- unlike every other caller so far (management commands'
+    --sync path, tests), a request from the browser must never block on a
+    solve that can take up to SOLVER_TIME_LIMIT_SECONDS. Returns 202 with
+    just the SolverRun id/status (not the full result -- it isn't ready
+    yet); the frontend polls GET /api/solver-runs/<id>/ for the outcome.
+    """
+
+    def post(self, request):
+        term_id = request.data.get("term_id")
+        if not term_id:
+            return Response({"detail": "term_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        feasibility_only = bool(request.data.get("feasibility_only", False))
+
+        term = get_object_or_404(self.scope_queryset(AcademicTerm.objects.all()), pk=term_id)
+
+        solver_run = SolverRun.objects.create(institution=self.institution, term=term, trigger=SolverRun.MANUAL)
+        async_result = run_feasibility_solver.delay(term.id, solver_run.id, feasibility_only)
+        solver_run.celery_task_id = async_result.id
+        solver_run.save(update_fields=["celery_task_id"])
+
+        return Response(
+            {"id": solver_run.id, "status": solver_run.status}, status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class SolverRunDetailView(InstitutionScopedMixin, generics.RetrieveAPIView):
+    """GET /api/solver-runs/<id>/ -- status of one solver run. Polled by
+    the frontend after POST /api/solver-runs/ enqueues a solve."""
+
+    serializer_class = SolverRunSerializer
+
+    def get_queryset(self):
+        return self.scope_queryset(SolverRun.objects.all())

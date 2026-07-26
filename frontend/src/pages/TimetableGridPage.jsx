@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { getClassDivisions, getTerms, getTimetableGrid } from '../api/client'
+import { getClassDivisions, getSolverRun, getTerms, getTimetableGrid, triggerSolverRun } from '../api/client'
 import { dayLabel, pivotSlotsToGrid } from '../utils/timetableGrid'
+
+const POLL_INTERVAL_MS = 2000
 
 export default function TimetableGridPage() {
   const { token } = useAuth()
@@ -16,6 +18,12 @@ export default function TimetableGridPage() {
   const [grid, setGrid] = useState(null)
   const [loadingGrid, setLoadingGrid] = useState(false)
   const [gridError, setGridError] = useState('')
+  const [gridRefreshKey, setGridRefreshKey] = useState(0)
+
+  const [solverRunId, setSolverRunId] = useState(null)
+  const [solverStatus, setSolverStatus] = useState(null)
+  const [solverError, setSolverError] = useState('')
+  const isGenerating = solverStatus === 'PENDING' || solverStatus === 'RUNNING'
 
   // Load terms + class divisions once, then auto-select the active term
   // (falling back to the first) and the first class division -- no
@@ -53,7 +61,8 @@ export default function TimetableGridPage() {
   }, [token])
 
   // Re-fetch the grid whenever the selected term or class division changes
-  // (including the initial auto-selected values).
+  // (including the initial auto-selected values), or when gridRefreshKey
+  // is bumped after a successful "Generate Timetable" run.
   useEffect(() => {
     if (!selectedTermId || !selectedClassDivisionId) return
     let cancelled = false
@@ -78,7 +87,68 @@ export default function TimetableGridPage() {
     return () => {
       cancelled = true
     }
-  }, [token, selectedTermId, selectedClassDivisionId])
+  }, [token, selectedTermId, selectedClassDivisionId, gridRefreshKey])
+
+  // Changing which term/class division is selected abandons any in-flight
+  // solver run tracking -- the polling effect below cleans up its own
+  // timeout as soon as solverRunId changes.
+  useEffect(() => {
+    setSolverRunId(null)
+    setSolverStatus(null)
+    setSolverError('')
+  }, [selectedTermId, selectedClassDivisionId])
+
+  // Poll GET /api/solver-runs/<id>/ every ~2s until SUCCESS or FAILED.
+  // Recursive setTimeout (not setInterval) so a poll never overlaps the
+  // next one, and cleanup only has one timer to worry about.
+  useEffect(() => {
+    if (!solverRunId) return
+    let cancelled = false
+    let timeoutId = null
+
+    async function poll() {
+      try {
+        const run = await getSolverRun(token, solverRunId)
+        if (cancelled) return
+        setSolverStatus(run.status)
+
+        if (run.status === 'SUCCESS') {
+          setGridRefreshKey((key) => key + 1)
+          return
+        }
+        if (run.status === 'FAILED') {
+          setSolverError(run.error_message || 'The solver failed for an unknown reason.')
+          return
+        }
+        timeoutId = setTimeout(poll, POLL_INTERVAL_MS)
+      } catch (err) {
+        if (!cancelled) {
+          setSolverStatus('FAILED')
+          setSolverError(err.message)
+        }
+      }
+    }
+
+    poll()
+
+    return () => {
+      cancelled = true
+      if (timeoutId) clearTimeout(timeoutId)
+    }
+  }, [token, solverRunId])
+
+  async function handleGenerate() {
+    setSolverError('')
+    setSolverStatus('PENDING')
+    try {
+      const run = await triggerSolverRun(token, selectedTermId)
+      setSolverRunId(run.id)
+      setSolverStatus(run.status)
+    } catch (err) {
+      setSolverStatus('FAILED')
+      setSolverError(err.message)
+    }
+  }
 
   if (loadingOptions) {
     return <p className="text-gray-500">Loading…</p>
@@ -94,7 +164,7 @@ export default function TimetableGridPage() {
 
   return (
     <div>
-      <div className="mb-6 flex flex-wrap gap-4">
+      <div className="mb-2 flex flex-wrap items-end gap-4">
         <div>
           <label htmlFor="term-select" className="mb-1 block text-xs font-medium text-gray-500">
             Term
@@ -131,7 +201,28 @@ export default function TimetableGridPage() {
             ))}
           </select>
         </div>
+
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={!selectedTermId || isGenerating}
+          className="rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isGenerating ? 'Generating…' : 'Generate Timetable'}
+        </button>
+
+        {isGenerating && (
+          <p className="text-sm text-gray-500" role="status">
+            Generating timetable… this can take up to 30 seconds.
+          </p>
+        )}
       </div>
+
+      {solverError && (
+        <p role="alert" className="mb-4 text-sm text-red-600">
+          {solverError}
+        </p>
+      )}
 
       {loadingGrid && <p className="text-gray-500">Loading timetable…</p>}
       {gridError && !loadingGrid && <p className="text-red-600">{gridError}</p>}
@@ -145,7 +236,7 @@ function GridTable({ grid }) {
   const institutionType = grid.institution.institution_type
 
   return (
-    <div className="overflow-x-auto">
+    <div className="mt-4 overflow-x-auto">
       <table className="min-w-full border-collapse text-sm">
         <thead>
           <tr>

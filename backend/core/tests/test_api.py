@@ -11,6 +11,7 @@ from core.models import (
     CourseRequirement,
     Department,
     Institution,
+    SolverRun,
     Subject,
     Teacher,
     TimeGridConfig,
@@ -226,3 +227,86 @@ class TimetableGridContentTests(ApiTestCase):
 
         actual_cell_count = TimetableCell.objects.filter(term=term, class_division=division).count()
         self.assertEqual(actual_cell_count, 2)
+
+
+class SolverRunTriggerTests(ApiTestCase):
+    def setUp(self):
+        self.institution_a = self.make_institution("Institution A")
+        self.term_a = self.make_term(self.institution_a, "Term A")
+        self.institution_b = self.make_institution("Institution B")
+        self.term_b = self.make_term(self.institution_b, "Term B")
+
+        self.user_a = self.make_user(self.institution_a, "user_a")
+        self.authenticate(self.user_a)
+
+    def test_trigger_returns_202_with_id_and_status(self):
+        response = self.client.post("/api/solver-runs/", {"term_id": self.term_a.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(set(response.data.keys()), {"id", "status"})
+
+        solver_run = SolverRun.objects.get(pk=response.data["id"])
+        self.assertEqual(solver_run.institution_id, self.institution_a.id)
+        self.assertEqual(solver_run.term_id, self.term_a.id)
+        self.assertEqual(solver_run.trigger, SolverRun.MANUAL)
+        self.assertTrue(solver_run.celery_task_id)
+
+    def test_trigger_with_another_institutions_term_id_returns_404(self):
+        response = self.client.post("/api/solver-runs/", {"term_id": self.term_b.id}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(SolverRun.objects.filter(term=self.term_b).exists())
+
+    def test_trigger_without_term_id_returns_400(self):
+        response = self.client.post("/api/solver-runs/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_trigger_requires_authentication(self):
+        self.client.credentials()
+        response = self.client.post("/api/solver-runs/", {"term_id": self.term_a.id}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class SolverRunDetailTests(ApiTestCase):
+    def setUp(self):
+        self.institution_a = self.make_institution("Institution A")
+        self.term_a = self.make_term(self.institution_a, "Term A")
+        self.institution_b = self.make_institution("Institution B")
+        self.term_b = self.make_term(self.institution_b, "Term B")
+
+        self.user_a = self.make_user(self.institution_a, "user_a")
+        self.authenticate(self.user_a)
+
+    def test_detail_returns_expected_fields(self):
+        solver_run = SolverRun.objects.create(
+            institution=self.institution_a, term=self.term_a, trigger=SolverRun.MANUAL,
+            status=SolverRun.SUCCESS, objective_value=12.5,
+        )
+
+        response = self.client.get(f"/api/solver-runs/{solver_run.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            set(response.data.keys()),
+            {"id", "status", "trigger", "objective_value", "error_message", "created_at", "started_at", "finished_at"},
+        )
+        self.assertEqual(response.data["id"], solver_run.id)
+        self.assertEqual(response.data["status"], SolverRun.SUCCESS)
+        self.assertEqual(response.data["trigger"], SolverRun.MANUAL)
+        self.assertEqual(response.data["objective_value"], 12.5)
+
+    def test_detail_for_another_institutions_solver_run_returns_404(self):
+        solver_run = SolverRun.objects.create(
+            institution=self.institution_b, term=self.term_b, trigger=SolverRun.MANUAL,
+        )
+
+        response = self.client.get(f"/api/solver-runs/{solver_run.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_detail_requires_authentication(self):
+        solver_run = SolverRun.objects.create(
+            institution=self.institution_a, term=self.term_a, trigger=SolverRun.MANUAL,
+        )
+        self.client.credentials()
+
+        response = self.client.get(f"/api/solver-runs/{solver_run.id}/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
