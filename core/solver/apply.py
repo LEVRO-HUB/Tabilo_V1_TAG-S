@@ -1,11 +1,12 @@
 """
-Tabilo — write a solve_feasibility() SolverResult's assignments to TimetableCell rows.
+Tabilo — write a solve_feasibility()/solve_optimized() SolverResult's
+assignments to TimetableCell rows.
 
-Note: this only ever creates or updates cells that appear in `assignments`;
-it does not delete stale unlocked cells left over from a previous solver run
-that the new solution no longer uses (e.g. if a rerun happens to place a
-CourseRequirement on different days). Full regenerate/cleanup semantics are
-out of scope for 3a's feasibility-only pass.
+Phase 3b re-solves the same term repeatedly as admin weight sliders get
+tuned, so — unlike 3a's one-shot apply — every unlocked cell for the term
+is cleared before writing the new solution. Otherwise a cell from an
+earlier weight configuration that the new solve no longer produces would
+just linger alongside the fresh ones. Locked cells are never touched.
 """
 
 from django.db import transaction
@@ -20,23 +21,31 @@ def apply_solution(term, assignments):
     time_slots = TimeSlot.objects.in_bulk({a["time_slot_id"] for a in assignments})
     teachers = Teacher.objects.in_bulk({a["teacher_id"] for a in assignments})
 
-    # Belt-and-suspenders: solve_feasibility() already excludes locked cells'
-    # (class_division, time_slot) from every active CR's domain, so this
-    # should never actually match — but "do not touch locked cells" is a
-    # hard invariant, not an assumption, so it's enforced here too.
-    locked_keys = set(
-        TimetableCell.objects.filter(term=term, is_locked=True).values_list(
-            "class_division_id", "time_slot_id", "subject_id"
-        )
-    )
-
     written = 0
     with transaction.atomic():
+        # Clear stale unlocked cells first, since a rerun with different
+        # weights (or updated data) can legitimately produce a different
+        # layout — without this, cells from an earlier solve that the new
+        # solution no longer uses would just linger alongside the new ones.
+        TimetableCell.objects.filter(term=term, is_locked=False).delete()
+
+        # Belt-and-suspenders: solve_feasibility()/solve_optimized() already
+        # exclude locked cells' (class_division, time_slot) from every active
+        # CR's domain, so this should never actually match — but "do not
+        # touch locked cells" is a hard invariant, not an assumption.
+        locked_keys = set(
+            TimetableCell.objects.filter(term=term, is_locked=True).values_list(
+                "class_division_id", "time_slot_id", "subject_id"
+            )
+        )
+
         for assignment in assignments:
             key = (assignment["class_division_id"], assignment["time_slot_id"], assignment["subject_id"])
             if key in locked_keys:
                 continue
             course_requirement = course_requirements[assignment["course_requirement_id"]]
+            # Still update_or_create (not bulk_create) for idempotency/safety
+            # rather than assuming every row here is a fresh insert.
             TimetableCell.objects.update_or_create(
                 term=term,
                 class_division=class_divisions[assignment["class_division_id"]],
