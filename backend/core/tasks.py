@@ -38,7 +38,7 @@ def run_feasibility_solver(self, term_id, solver_run_id=None, feasibility_only=F
     if solver_run_id is not None:
         solver_run = SolverRun.objects.get(pk=solver_run_id)
     else:
-        solver_run = SolverRun.objects.create(institution=term.institution, term=term)
+        solver_run = SolverRun.objects.create(institution=term.institution, term=term, trigger=SolverRun.MANUAL)
 
     solver_run.status = SolverRun.RUNNING
     solver_run.celery_task_id = self.request.id or ""

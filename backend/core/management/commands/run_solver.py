@@ -59,7 +59,7 @@ class Command(BaseCommand):
             ))
 
     def _run_async(self, term, feasibility_only):
-        solver_run = SolverRun.objects.create(institution=term.institution, term=term)
+        solver_run = SolverRun.objects.create(institution=term.institution, term=term, trigger=SolverRun.MANUAL)
         async_result = run_feasibility_solver.delay(term.id, solver_run.id, feasibility_only)
         mode = "feasibility-only" if feasibility_only else "optimized"
         self.stdout.write(
