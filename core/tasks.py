@@ -1,10 +1,13 @@
 """
 Tabilo — Celery tasks (Phase 3).
 
-run_feasibility_solver is the async entry point for the CP-SAT feasibility
-solver: a thin wrapper around core.solver.build.solve_feasibility +
-core.solver.apply.apply_solution that turns solver outcomes into SolverRun
-status updates instead of letting a failure vanish into worker logs.
+run_feasibility_solver is the async entry point for the CP-SAT solver: a
+thin wrapper around core.solver.build.solve_optimized (or solve_feasibility
+when feasibility_only=True) + core.solver.apply.apply_solution that turns
+solver outcomes into SolverRun status updates instead of letting a failure
+vanish into worker logs. The name predates Phase 3b's weighted objective
+becoming the default behavior — kept as-is to avoid churning every caller
+for a rename; feasibility_only is what actually selects Phase 3a behavior.
 
 Calling this function directly (not via .delay()/.apply_async()) runs it
 synchronously in-process without touching the Celery broker at all — that's
@@ -25,11 +28,11 @@ from django.utils import timezone
 
 from core.models import AcademicTerm, SolverRun
 from core.solver.apply import apply_solution
-from core.solver.build import solve_feasibility
+from core.solver.build import solve_feasibility, solve_optimized
 
 
 @shared_task(bind=True)
-def run_feasibility_solver(self, term_id, solver_run_id=None):
+def run_feasibility_solver(self, term_id, solver_run_id=None, feasibility_only=False):
     term = AcademicTerm.objects.get(pk=term_id)
 
     if solver_run_id is not None:
@@ -43,7 +46,7 @@ def run_feasibility_solver(self, term_id, solver_run_id=None):
     solver_run.save(update_fields=["status", "celery_task_id", "started_at"])
 
     try:
-        result = solve_feasibility(term)
+        result = solve_feasibility(term) if feasibility_only else solve_optimized(term)
         if result.status not in ("FEASIBLE", "OPTIMAL"):
             solver_run.status = SolverRun.FAILED
             solver_run.error_message = result.error_message or f"Solver returned {result.status}."
@@ -53,9 +56,15 @@ def run_feasibility_solver(self, term_id, solver_run_id=None):
 
         cells_written = apply_solution(term, result.assignments)
         solver_run.status = SolverRun.SUCCESS
+        solver_run.objective_value = result.objective_value
         solver_run.finished_at = timezone.now()
-        solver_run.save(update_fields=["status", "finished_at"])
-        return {"solver_run_id": solver_run.id, "status": result.status, "cells_written": cells_written}
+        solver_run.save(update_fields=["status", "objective_value", "finished_at"])
+        return {
+            "solver_run_id": solver_run.id,
+            "status": result.status,
+            "cells_written": cells_written,
+            "objective_value": result.objective_value,
+        }
 
     except Exception as exc:
         solver_run.status = SolverRun.FAILED
