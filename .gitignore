@@ -1,6 +1,4 @@
-__pycache__/
-*.pyc
-.env
-*.sqlite3
-.venv/
-venv/
+# Repo-wide OS/editor cruft only. Backend-specific and frontend-specific
+# ignores live in backend/.gitignore and frontend/.gitignore respectively.
+.DS_Store
+Thumbs.db
