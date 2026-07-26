@@ -15,6 +15,7 @@ from core.models import (
     FacultyDutyBlock,
     TimetableCell,
     SolverRun,
+    SolverWeightConfig,
 )
 
 
@@ -47,8 +48,8 @@ class TeacherAdmin(admin.ModelAdmin):
 
 @admin.register(Subject)
 class SubjectAdmin(admin.ModelAdmin):
-    list_display = ("name", "code", "department", "institution", "is_elective")
-    list_filter = ("institution", "department", "is_elective")
+    list_display = ("name", "code", "department", "institution", "is_elective", "cognitive_load_priority")
+    list_filter = ("institution", "department", "is_elective", "cognitive_load_priority")
     search_fields = ("name", "code")
 
 
@@ -101,5 +102,10 @@ class TimetableCellAdmin(admin.ModelAdmin):
 
 @admin.register(SolverRun)
 class SolverRunAdmin(admin.ModelAdmin):
-    list_display = ("status", "institution", "term", "created_at")
+    list_display = ("status", "institution", "term", "objective_value", "created_at")
     list_filter = ("institution", "term", "status")
+
+
+@admin.register(SolverWeightConfig)
+class SolverWeightConfigAdmin(admin.ModelAdmin):
+    list_display = ("institution", "gap_weight", "cognitive_load_weight", "fair_rotation_weight")

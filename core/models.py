@@ -124,11 +124,25 @@ class Teacher(models.Model):
 
 
 class Subject(models.Model):
+    HIGH = "HIGH"
+    NORMAL = "NORMAL"
+    COGNITIVE_LOAD_CHOICES = [
+        (HIGH, "High"),
+        (NORMAL, "Normal"),
+    ]
+
     institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="subjects")
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name="subjects")
     name = models.CharField(max_length=255)
     code = models.CharField(max_length=32)
     is_elective = models.BooleanField(default=False)
+
+    # Phase 3b: subjects that deserve a "fresh mind" placement (e.g. a hard
+    # Math period) get scheduled preferentially in the first half of the day
+    # when cognitive_load_weight favors it — see core/solver/build.py.
+    cognitive_load_priority = models.CharField(
+        max_length=10, choices=COGNITIVE_LOAD_CHOICES, default=NORMAL
+    )
 
     class Meta:
         ordering = ["institution", "department", "name"]
@@ -486,6 +500,9 @@ class SolverRun(models.Model):
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(blank=True)
+    # Achieved weighted-objective value (lower is better) for a Phase 3b
+    # optimized run; stays null for a feasibility-only (Phase 3a) run.
+    objective_value = models.FloatField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -497,3 +514,35 @@ class SolverRun(models.Model):
 
     def __str__(self):
         return f"SolverRun({self.term.name}, {self.status})"
+
+
+# ---------------------------------------------------------------------------
+# Weighted objective configuration (Phase 3b)
+# ---------------------------------------------------------------------------
+
+class SolverWeightConfig(models.Model):
+    """
+    Per-institution weights for the Phase 3b weighted-sum quality objective
+    (gap minimization, cognitive-load placement, fair afternoon rotation) —
+    the admin "sliders" from the PRD. Higher weight = the solver works
+    harder to avoid that penalty relative to the other two.
+    """
+    institution = models.OneToOneField(Institution, on_delete=models.CASCADE, related_name="solver_weight_config")
+    gap_weight = models.PositiveSmallIntegerField(default=50)
+    cognitive_load_weight = models.PositiveSmallIntegerField(default=50)
+    fair_rotation_weight = models.PositiveSmallIntegerField(default=50)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(gap_weight__gte=0) & Q(gap_weight__lte=100)
+                    & Q(cognitive_load_weight__gte=0) & Q(cognitive_load_weight__lte=100)
+                    & Q(fair_rotation_weight__gte=0) & Q(fair_rotation_weight__lte=100)
+                ),
+                name="solverweightconfig_weights_in_range",
+            ),
+        ]
+
+    def __str__(self):
+        return f"SolverWeightConfig({self.institution.name})"
