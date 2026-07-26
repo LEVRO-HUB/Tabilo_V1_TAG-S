@@ -9,6 +9,7 @@ from core.models import (
     TeacherSubjectEligibility,
     ClassDivision,
     TimeGridConfig,
+    AcademicCalendarDay,
     TimeSlot,
     ElectiveGroup,
     CourseRequirement,
@@ -68,6 +69,12 @@ class ClassDivisionAdmin(admin.ModelAdmin):
 @admin.register(TimeGridConfig)
 class TimeGridConfigAdmin(admin.ModelAdmin):
     list_display = ("institution", "periods_per_day", "period_duration_minutes", "day_start_time")
+
+
+@admin.register(AcademicCalendarDay)
+class AcademicCalendarDayAdmin(admin.ModelAdmin):
+    list_display = ("date", "day_identifier", "is_holiday", "label", "institution")
+    list_filter = ("institution", "is_holiday")
 
 
 @admin.register(TimeSlot)

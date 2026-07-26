@@ -278,6 +278,39 @@ class TimeGridConfig(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# Academic calendar (Phase 4c): maps real dates to the day_identifier cycle
+# ---------------------------------------------------------------------------
+
+class AcademicCalendarDay(models.Model):
+    """
+    One row per real calendar date for an institution, mapping it to the
+    abstract day_identifier cycle that TimeSlot/TimetableCell/the solver
+    already operate on. Built by core/services/calendar.py.
+
+    day_identifier is null for any date with no classes -- a routine weekly
+    off (is_holiday=False) or an explicit holiday (is_holiday=True). This is
+    what Phase 4b's substitution engine will use to turn a real absence date
+    (e.g. "Aug 15") into the abstract "Day 3" the rest of the schema speaks.
+    """
+    institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="calendar_days")
+    date = models.DateField()
+    day_identifier = models.PositiveSmallIntegerField(null=True, blank=True)
+    is_holiday = models.BooleanField(default=False)
+    label = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["institution", "date"]
+        unique_together = ("institution", "date")
+        indexes = [
+            models.Index(fields=["institution", "date"]),
+            models.Index(fields=["institution", "day_identifier"]),
+        ]
+
+    def __str__(self):
+        return f"{self.date} -> Day {self.day_identifier} ({self.institution.name})"
+
+
+# ---------------------------------------------------------------------------
 # Elective parallelism support
 # ---------------------------------------------------------------------------
 
