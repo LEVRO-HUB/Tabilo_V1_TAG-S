@@ -460,9 +460,21 @@ class TimetableCell(models.Model):
         ElectiveGroup, on_delete=models.SET_NULL, null=True, blank=True, related_name="timetable_cells"
     )
 
+    MANUAL = "MANUAL"
+    RESIGNATION_RECOVERY = "RESIGNATION_RECOVERY"
+    LOCKED_REASON_CHOICES = [
+        (MANUAL, "Manual"),
+        (RESIGNATION_RECOVERY, "Resignation Recovery"),
+    ]
+
     # True for cells pinned by an admin or locked as part of a contiguous
     # lab block — protects them from being reshuffled during regeneration.
     is_locked = models.BooleanField(default=False)
+    # Purely informational -- never read by any constraint/solver logic.
+    # Lets an admin tell whether a locked cell is a deliberate pin, or a
+    # temporary lock left over from a resignation-recovery run that should
+    # already have unlocked it again (core/services/resignation.py).
+    locked_reason = models.CharField(max_length=20, choices=LOCKED_REASON_CHOICES, blank=True, null=True)
 
     class Meta:
         ordering = ["institution", "term", "class_division", "time_slot"]
@@ -526,9 +538,17 @@ class SolverRun(models.Model):
         (FAILED, "Failed"),
     ]
 
+    MANUAL = "MANUAL"
+    RESIGNATION_RECOVERY = "RESIGNATION_RECOVERY"
+    TRIGGER_CHOICES = [
+        (MANUAL, "Manual"),
+        (RESIGNATION_RECOVERY, "Resignation Recovery"),
+    ]
+
     institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="solver_runs")
     term = models.ForeignKey(AcademicTerm, on_delete=models.CASCADE, related_name="solver_runs")
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=PENDING)
+    trigger = models.CharField(max_length=20, choices=TRIGGER_CHOICES, default=MANUAL)
     celery_task_id = models.CharField(max_length=255, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
