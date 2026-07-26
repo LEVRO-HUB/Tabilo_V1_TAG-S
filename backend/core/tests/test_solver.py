@@ -19,7 +19,7 @@ from core.models import (
 )
 from core.services.timegrid import generate_time_slots
 from core.solver.apply import apply_solution
-from core.solver.build import solve_feasibility
+from core.solver.build import solve_feasibility, solve_optimized
 
 
 class SolverTestCase(TestCase):
@@ -316,3 +316,50 @@ class LockedCourseRequirementSkipTests(SolverTestCase):
 
         active_cell = TimetableCell.objects.get(term=term, subject=active_subject)
         self.assertNotEqual(active_cell.time_slot_id, slots[0].id)
+
+
+class InactiveTeacherEligibilityExclusionTests(SolverTestCase):
+    """
+    Regression coverage: an inactive/resigned teacher with a stale
+    TeacherSubjectEligibility row must never be selected by the solver for
+    a null-teacher CourseRequirement -- for either solve_feasibility() or
+    solve_optimized() -- even when they're the only OTHER eligible option
+    besides the genuinely active teacher.
+    """
+
+    def _setup_active_and_inactive_eligible_teachers(self):
+        institution = self.make_institution(cycle_length=1)
+        self.make_grid(institution, periods_per_day=3)
+        term = self.make_term(institution)
+        department = Department.objects.create(institution=institution, name="Dept")
+        division = self.make_division(institution, department)
+        subject = self.make_subject(institution, department, "SUB1")
+
+        active_teacher = self.make_teacher(institution, "active@test.edu")
+        inactive_teacher = self.make_teacher(institution, "inactive@test.edu")
+        inactive_teacher.is_active = False
+        inactive_teacher.save()
+
+        TeacherSubjectEligibility.objects.create(institution=institution, teacher=active_teacher, subject=subject)
+        TeacherSubjectEligibility.objects.create(institution=institution, teacher=inactive_teacher, subject=subject)
+
+        self.make_requirement(institution, term, division, subject, periods_per_week=1, teacher=None)
+        return term, active_teacher, inactive_teacher
+
+    def test_solve_feasibility_never_selects_inactive_teacher(self):
+        term, active_teacher, inactive_teacher = self._setup_active_and_inactive_eligible_teachers()
+
+        result = solve_feasibility(term)
+
+        self.assertEqual(result.status, "FEASIBLE")
+        self.assertEqual(len(result.assignments), 1)
+        self.assertEqual(result.assignments[0]["teacher_id"], active_teacher.id)
+
+    def test_solve_optimized_never_selects_inactive_teacher(self):
+        term, active_teacher, inactive_teacher = self._setup_active_and_inactive_eligible_teachers()
+
+        result = solve_optimized(term)
+
+        self.assertEqual(result.status, "FEASIBLE")
+        self.assertEqual(len(result.assignments), 1)
+        self.assertEqual(result.assignments[0]["teacher_id"], active_teacher.id)

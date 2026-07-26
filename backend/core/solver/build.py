@@ -141,9 +141,11 @@ def _build_hard_constraint_model(term):
     )
     forbidden_teacher_slot_pairs = duty_block_pairs | locked_teacher_slot_pairs
 
+    # teacher__is_active=True: an inactive/resigned teacher's old eligibility
+    # rows must never make them a candidate for a null-teacher CR again.
     eligible_teachers_by_subject = defaultdict(list)
     for teacher_id, subject_id in TeacherSubjectEligibility.objects.filter(
-        institution=institution
+        institution=institution, teacher__is_active=True,
     ).values_list("teacher_id", "subject_id"):
         eligible_teachers_by_subject[subject_id].append(teacher_id)
 
