@@ -12,6 +12,7 @@ from core.models import (
     Subject,
     SolverWeightConfig,
     Teacher,
+    TeacherSubjectEligibility,
     TimeGridConfig,
     TimetableCell,
 )
@@ -167,6 +168,69 @@ class FairAfternoonRotationTests(SolverTestCase):
 
         self.assertEqual(fair_spread, 0)
         self.assertLess(fair_spread, unfair_spread)
+
+
+class FairRotationExcludesIdleEligibleTeachersTests(SolverTestCase):
+    def test_idle_eligible_teachers_are_excluded_from_fairness_calculation(self):
+        # 1 day, 6 teaching periods, break after period 3 -> non-break
+        # period_numbers [1,2,3,5,6,7]: morning={1,2,3}, afternoon={5,6,7}.
+        #
+        # CR_fixed (teacher_busy, pw=6) exactly fills every non-break slot --
+        # no choice at all, afternoon_busy is forced to exactly 3.
+        #
+        # CR_null (teacher=None, pw=1) has 3 eligible teachers but only 1 of
+        # them ends up teaching its single session; the other 2 stay
+        # eligible-but-idle for the whole term. That one session can go in
+        # the morning (afternoon_count=0, true spread=|3-0|=3) or the
+        # afternoon (afternoon_count=1, true spread=|3-1|=2) -- afternoon is
+        # strictly better under genuine fairness between the two teachers
+        # who are actually teaching.
+        #
+        # Pre-fix, min_afternoon was anchored at 0 by one of the 2 idle
+        # eligible teachers regardless of anything else, making the computed
+        # spread a constant max_afternoon(=3) - 0 = 3 no matter where
+        # CR_null's session landed -- fair_rotation_weight would have had
+        # zero influence on its placement. The fix must show a real,
+        # deterministic preference for the afternoon slot instead.
+        institution = self.make_institution(cycle_length=1)
+        self.make_grid(institution, periods_per_day=6, breaks=[{"after_period": 3, "duration_minutes": 60}])
+        term = self.make_term(institution)
+        department = Department.objects.create(institution=institution, name="Dept")
+        division_busy = self.make_division(institution, department, "Div Busy")
+        division_null = self.make_division(institution, department, "Div Null")
+        subject_busy = self.make_subject(institution, department, "BUSYSUB")
+        subject_null = self.make_subject(institution, department, "NULLSUB")
+
+        teacher_busy = self.make_teacher(institution, "busy@test.edu", max_periods_per_day=6, max_periods_per_week=20)
+        eligible_teachers = [
+            self.make_teacher(institution, f"eligible{i}@test.edu", max_periods_per_day=6, max_periods_per_week=20)
+            for i in range(3)
+        ]
+        for teacher in eligible_teachers:
+            TeacherSubjectEligibility.objects.create(institution=institution, teacher=teacher, subject=subject_null)
+
+        self.make_requirement(institution, term, division_busy, subject_busy, periods_per_week=6, teacher=teacher_busy)
+        self.make_requirement(institution, term, division_null, subject_null, periods_per_week=1, teacher=None)
+
+        weights = SolverWeightConfig(gap_weight=0, cognitive_load_weight=0, fair_rotation_weight=100)
+        result = solve_optimized(term, weight_config=weights)
+
+        self.assertEqual(result.status, "FEASIBLE")
+        apply_solution(term, result.assignments)
+
+        self.assertEqual(TimetableCell.objects.filter(term=term).count(), 7)
+
+        null_cell = TimetableCell.objects.get(term=term, subject=subject_null)
+        self.assertGreater(
+            null_cell.time_slot.period_number, 3,
+            "expected the null-teacher session to be pulled into the afternoon for genuine fairness "
+            "against teacher_busy -- if this fails, idle eligible teachers are still polluting the "
+            "fairness calculation and fair_rotation_weight has no real effect here",
+        )
+
+        idle_teacher_ids = {t.id for t in eligible_teachers} - {null_cell.teacher_id}
+        self.assertEqual(len(idle_teacher_ids), 2)
+        self.assertFalse(TimetableCell.objects.filter(term=term, teacher_id__in=idle_teacher_ids).exists())
 
 
 class DefaultWeightFallbackTests(SolverTestCase):

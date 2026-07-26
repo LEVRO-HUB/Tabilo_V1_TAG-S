@@ -539,16 +539,36 @@ def _compute_afternoon_slot_ids(institution, slots_by_day):
 
 def _fair_rotation_penalty_term(model, teacher_slot_terms, afternoon_slot_ids):
     """
-    max(afternoon_count) - min(afternoon_count) across every teacher with
-    at least one assignment anywhere in the term (i.e. every teacher present
-    in teacher_slot_terms — any CR referencing them must reach its full
-    periods_per_week in any feasible solution).
+    max(afternoon_count) - min(afternoon_count) across every teacher who
+    actually ends up teaching in the solution.
+
+    teacher_slot_terms contains an entry for every teacher *eligible* for a
+    null-teacher CourseRequirement, not just the one the solver ultimately
+    picks — a reified y-var gets created per eligible teacher per candidate
+    slot regardless of outcome. Raw presence in teacher_slot_terms therefore
+    does NOT mean "is teaching": an eligible-but-unused teacher would show
+    afternoon_count=0 and could permanently anchor min_afternoon at 0,
+    degrading this into "just minimize the busiest teacher's load" instead
+    of genuine fairness among teachers who are actually assigned anything.
+
+    So each teacher gets an is_active flag (their total assignment count
+    across every slot, not just afternoon ones, is >= 1), and min_afternoon
+    is taken over an "adjusted" count that pushes inactive teachers far out
+    of range (afternoon_count + a large constant) so they can never win the
+    min unless literally every teacher is inactive — which can't happen in
+    any feasible solution, since some CourseRequirement must always be
+    satisfied by someone. max_afternoon is unaffected: an inactive teacher
+    contributes 0 there, which can't win a max unless everyone is inactive,
+    same reasoning.
     """
     if not teacher_slot_terms:
         return None
 
     upper_bound = max(len(afternoon_slot_ids), 1)
+    big = upper_bound + 1
+
     afternoon_counts = []
+    adjusted_counts = []
     for teacher_id, slot_terms in teacher_slot_terms.items():
         afternoon_terms = [
             term for slot_id in afternoon_slot_ids for term in slot_terms.get(slot_id, [])
@@ -557,12 +577,26 @@ def _fair_rotation_penalty_term(model, teacher_slot_terms, afternoon_slot_ids):
         model.Add(count_var == (sum(afternoon_terms) if afternoon_terms else 0))
         afternoon_counts.append(count_var)
 
-    max_afternoon = model.NewIntVar(0, upper_bound, "max_afternoon")
-    min_afternoon = model.NewIntVar(0, upper_bound, "min_afternoon")
-    model.AddMaxEquality(max_afternoon, afternoon_counts)
-    model.AddMinEquality(min_afternoon, afternoon_counts)
+        all_terms = [term for terms in slot_terms.values() for term in terms]
+        total_upper_bound = max(len(slot_terms), 1)
+        total_var = model.NewIntVar(0, total_upper_bound, f"total_count_t{teacher_id}")
+        model.Add(total_var == (sum(all_terms) if all_terms else 0))
 
-    spread = model.NewIntVar(0, upper_bound, "afternoon_spread")
+        is_active = model.NewBoolVar(f"is_active_t{teacher_id}")
+        model.Add(total_var >= 1).OnlyEnforceIf(is_active)
+        model.Add(total_var == 0).OnlyEnforceIf(is_active.Not())
+
+        adjusted_var = model.NewIntVar(0, upper_bound + big, f"adjusted_afternoon_count_t{teacher_id}")
+        model.Add(adjusted_var == count_var + (1 - is_active) * big)
+        adjusted_counts.append(adjusted_var)
+
+    max_afternoon = model.NewIntVar(0, upper_bound, "max_afternoon")
+    model.AddMaxEquality(max_afternoon, afternoon_counts)
+
+    min_afternoon = model.NewIntVar(0, upper_bound + big, "min_afternoon")
+    model.AddMinEquality(min_afternoon, adjusted_counts)
+
+    spread = model.NewIntVar(0, upper_bound + big, "afternoon_spread")
     model.Add(spread == max_afternoon - min_afternoon)
     return spread
 
