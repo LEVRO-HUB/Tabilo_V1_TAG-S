@@ -22,11 +22,13 @@ Usage:
 
 import datetime
 
+from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from core.models import (
     Institution,
+    UserProfile,
     Department,
     AcademicTerm,
     Teacher,
@@ -40,6 +42,10 @@ from core.models import (
 from core.services.ingestion import ingest_course_requirement
 from core.services.timegrid import generate_time_slots
 
+# Local dev seed data ONLY -- a fixed, shared, publicly-known password like
+# this must never be used for anything resembling production data.
+DEV_PASSWORD = "tabilo-dev-2026"
+
 
 class Command(BaseCommand):
     help = "Seed realistic local test data for a School scenario and a College scenario."
@@ -49,6 +55,24 @@ class Command(BaseCommand):
         self.seed_school()
         self.seed_college()
         self.stdout.write(self.style.SUCCESS("Seed data created successfully."))
+        self.stdout.write(self.style.WARNING(
+            "\nDev login credentials (local seed data ONLY -- never use fixed/shared "
+            "credentials like these for anything resembling production data):\n"
+            f"  greenwood_admin  / {DEV_PASSWORD}   (Greenwood Public School)\n"
+            f"  coromandel_admin / {DEV_PASSWORD}   (Coromandel Institute of Engineering)\n"
+        ))
+
+    def seed_admin_user(self, institution, username):
+        User = get_user_model()
+        user, created = User.objects.get_or_create(
+            username=username, defaults={"email": f"{username}@example.com"},
+        )
+        if created:
+            user.set_password(DEV_PASSWORD)
+            user.save()
+        UserProfile.objects.get_or_create(
+            user=user, defaults={"institution": institution, "role": UserProfile.ADMIN},
+        )
 
     # ------------------------------------------------------------------
     # School scenario
@@ -143,6 +167,8 @@ class Command(BaseCommand):
                     is_lab=False,
                     block_size=1,
                 )
+
+        self.seed_admin_user(school, "greenwood_admin")
 
     # ------------------------------------------------------------------
     # College scenario (Anna University-affiliated engineering college)
@@ -260,3 +286,5 @@ class Command(BaseCommand):
             institution=college, term=term, teacher=teachers["Dr. Lakshmi Venkat"], time_slot=exam_slot,
             defaults={"duty_type": FacultyDutyBlock.NAAC_COMPLIANCE, "notes": "NAAC documentation window"},
         )
+
+        self.seed_admin_user(college, "coromandel_admin")
