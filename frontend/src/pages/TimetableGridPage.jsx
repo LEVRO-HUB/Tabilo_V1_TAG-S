@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { getClassDivisions, getSolverRun, getTerms, getTimetableGrid, triggerSolverRun } from '../api/client'
+import { getClassDivisions, getTerms, getTimetableGrid, triggerSolverRun } from '../api/client'
+import { useSolverRunPolling } from '../hooks/useSolverRunPolling'
 import { dayLabel, pivotSlotsToGrid } from '../utils/timetableGrid'
-
-const POLL_INTERVAL_MS = 2000
 
 export default function TimetableGridPage() {
   const { token } = useAuth()
@@ -20,10 +19,13 @@ export default function TimetableGridPage() {
   const [gridError, setGridError] = useState('')
   const [gridRefreshKey, setGridRefreshKey] = useState(0)
 
-  const [solverRunId, setSolverRunId] = useState(null)
-  const [solverStatus, setSolverStatus] = useState(null)
-  const [solverError, setSolverError] = useState('')
-  const isGenerating = solverStatus === 'PENDING' || solverStatus === 'RUNNING'
+  const {
+    status: solverStatus,
+    error: solverError,
+    isPolling: isGenerating,
+    trigger: triggerPolling,
+    reset: resetPolling,
+  } = useSolverRunPolling(token)
 
   // Load terms + class divisions once, then auto-select the active term
   // (falling back to the first) and the first class division -- no
@@ -90,64 +92,16 @@ export default function TimetableGridPage() {
   }, [token, selectedTermId, selectedClassDivisionId, gridRefreshKey])
 
   // Changing which term/class division is selected abandons any in-flight
-  // solver run tracking -- the polling effect below cleans up its own
-  // timeout as soon as solverRunId changes.
+  // solver run tracking -- the hook's own polling effect cleans up its
+  // timeout as soon as its runId changes (including to null, here).
   useEffect(() => {
-    setSolverRunId(null)
-    setSolverStatus(null)
-    setSolverError('')
-  }, [selectedTermId, selectedClassDivisionId])
-
-  // Poll GET /api/solver-runs/<id>/ every ~2s until SUCCESS or FAILED.
-  // Recursive setTimeout (not setInterval) so a poll never overlaps the
-  // next one, and cleanup only has one timer to worry about.
-  useEffect(() => {
-    if (!solverRunId) return
-    let cancelled = false
-    let timeoutId = null
-
-    async function poll() {
-      try {
-        const run = await getSolverRun(token, solverRunId)
-        if (cancelled) return
-        setSolverStatus(run.status)
-
-        if (run.status === 'SUCCESS') {
-          setGridRefreshKey((key) => key + 1)
-          return
-        }
-        if (run.status === 'FAILED') {
-          setSolverError(run.error_message || 'The solver failed for an unknown reason.')
-          return
-        }
-        timeoutId = setTimeout(poll, POLL_INTERVAL_MS)
-      } catch (err) {
-        if (!cancelled) {
-          setSolverStatus('FAILED')
-          setSolverError(err.message)
-        }
-      }
-    }
-
-    poll()
-
-    return () => {
-      cancelled = true
-      if (timeoutId) clearTimeout(timeoutId)
-    }
-  }, [token, solverRunId])
+    resetPolling()
+  }, [selectedTermId, selectedClassDivisionId, resetPolling])
 
   async function handleGenerate() {
-    setSolverError('')
-    setSolverStatus('PENDING')
-    try {
-      const run = await triggerSolverRun(token, selectedTermId)
-      setSolverRunId(run.id)
-      setSolverStatus(run.status)
-    } catch (err) {
-      setSolverStatus('FAILED')
-      setSolverError(err.message)
-    }
+    triggerPolling(() => triggerSolverRun(token, selectedTermId), {
+      onSuccess: () => setGridRefreshKey((key) => key + 1),
+    })
   }
 
   if (loadingOptions) {

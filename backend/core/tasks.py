@@ -26,7 +26,8 @@ it and get a fresh row created here instead.
 from celery import shared_task
 from django.utils import timezone
 
-from core.models import AcademicTerm, SolverRun
+from core.models import AcademicTerm, SolverRun, Teacher
+from core.services.resignation import recover_from_resignation
 from core.solver.apply import apply_solution
 from core.solver.build import solve_feasibility, solve_optimized
 
@@ -66,6 +67,40 @@ def run_feasibility_solver(self, term_id, solver_run_id=None, feasibility_only=F
             "objective_value": result.objective_value,
         }
 
+    except Exception as exc:
+        solver_run.status = SolverRun.FAILED
+        solver_run.error_message = str(exc)
+        solver_run.finished_at = timezone.now()
+        solver_run.save(update_fields=["status", "error_message", "finished_at"])
+        return {"solver_run_id": solver_run.id, "status": "ERROR", "error_message": str(exc)}
+
+
+@shared_task(bind=True)
+def run_resignation_recovery(self, teacher_id, term_id, solver_run_id):
+    """
+    Async entry point for core.services.resignation.recover_from_resignation.
+    Unlike run_feasibility_solver, the service function itself already
+    writes the final status/objective_value/error_message onto the
+    SolverRun it's given (see resignation.py's "Step 9") -- this task's job
+    is just the same RUNNING/celery_task_id/started_at bookkeeping
+    run_feasibility_solver does before the real work, plus finished_at and
+    an except-Exception safety net after, for a failure the service itself
+    didn't anticipate (e.g. a bad teacher_id/term_id).
+    """
+    teacher = Teacher.objects.get(pk=teacher_id)
+    term = AcademicTerm.objects.get(pk=term_id)
+    solver_run = SolverRun.objects.get(pk=solver_run_id)
+
+    solver_run.status = SolverRun.RUNNING
+    solver_run.celery_task_id = self.request.id or ""
+    solver_run.started_at = timezone.now()
+    solver_run.save(update_fields=["status", "celery_task_id", "started_at"])
+
+    try:
+        result = recover_from_resignation(teacher, term, solver_run=solver_run)
+        solver_run.finished_at = timezone.now()
+        solver_run.save(update_fields=["finished_at"])
+        return {"solver_run_id": solver_run.id, "status": result.status}
     except Exception as exc:
         solver_run.status = SolverRun.FAILED
         solver_run.error_message = str(exc)

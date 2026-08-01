@@ -20,6 +20,7 @@ async function request(path, { method = 'GET', token, body } = {}) {
     throw new Error(await extractErrorMessage(response))
   }
 
+  if (response.status === 204) return null // DELETE -- no body to parse
   return response.json()
 }
 
@@ -68,4 +69,60 @@ export function triggerSolverRun(token, termId, feasibilityOnly = false) {
 
 export function getSolverRun(token, runId) {
   return request(`/api/solver-runs/${runId}/`, { token })
+}
+
+export function getDepartments(token) {
+  return request('/api/departments/', { token })
+}
+
+export function getTeachers(token) {
+  return request('/api/teachers/', { token })
+}
+
+export function createTeacher(token, teacher) {
+  return request('/api/teachers/', { method: 'POST', token, body: teacher })
+}
+
+export function updateTeacher(token, teacherId, patch) {
+  return request(`/api/teachers/${teacherId}/`, { method: 'PATCH', token, body: patch })
+}
+
+export function getSubjects(token) {
+  return request('/api/subjects/', { token })
+}
+
+export function createSubject(token, subject) {
+  return request('/api/subjects/', { method: 'POST', token, body: subject })
+}
+
+export function updateSubject(token, subjectId, patch) {
+  return request(`/api/subjects/${subjectId}/`, { method: 'PATCH', token, body: patch })
+}
+
+export function deleteSubject(token, subjectId) {
+  return request(`/api/subjects/${subjectId}/`, { method: 'DELETE', token })
+}
+
+export function getCourseRequirements(token) {
+  return request('/api/course-requirements/', { token })
+}
+
+export function createCourseRequirement(token, courseRequirement) {
+  return request('/api/course-requirements/', { method: 'POST', token, body: courseRequirement })
+}
+
+export function updateCourseRequirement(token, courseRequirementId, patch) {
+  return request(`/api/course-requirements/${courseRequirementId}/`, { method: 'PATCH', token, body: patch })
+}
+
+export function deleteCourseRequirement(token, courseRequirementId) {
+  return request(`/api/course-requirements/${courseRequirementId}/`, { method: 'DELETE', token })
+}
+
+export function triggerResignationRecovery(token, teacherId, termId) {
+  return request('/api/resignation-recovery/', {
+    method: 'POST',
+    token,
+    body: { teacher_id: teacherId, term_id: termId },
+  })
 }

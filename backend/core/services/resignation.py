@@ -37,7 +37,7 @@ class _RecoveryInfeasible(Exception):
         self.result = result
 
 
-def recover_from_resignation(teacher, term):
+def recover_from_resignation(teacher, term, solver_run=None):
     if teacher.institution_id != term.institution_id:
         raise ValueError(
             f"{teacher.name} belongs to a different institution than term {term.name}."
@@ -106,14 +106,18 @@ def recover_from_resignation(teacher, term):
 
     # Step 9: record the outcome either way. For the failure path this runs
     # in a fresh transaction, outside the one that just rolled back.
-    SolverRun.objects.create(
-        institution=term.institution,
-        term=term,
-        trigger=SolverRun.RESIGNATION_RECOVERY,
-        status=SolverRun.SUCCESS if result.status == "FEASIBLE" else SolverRun.FAILED,
-        objective_value=result.objective_value,
-        error_message=result.error_message or "",
-    )
+    outcome_fields = {
+        "trigger": SolverRun.RESIGNATION_RECOVERY,
+        "status": SolverRun.SUCCESS if result.status == "FEASIBLE" else SolverRun.FAILED,
+        "objective_value": result.objective_value,
+        "error_message": result.error_message or "",
+    }
+    if solver_run is None:
+        SolverRun.objects.create(institution=term.institution, term=term, **outcome_fields)
+    else:
+        for field, value in outcome_fields.items():
+            setattr(solver_run, field, value)
+        solver_run.save(update_fields=list(outcome_fields))
 
     # Step 10.
     return result

@@ -53,3 +53,35 @@ class InstitutionScopedMixin:
     def scope_queryset(self, queryset):
         """Filter a queryset to the requester's institution only."""
         return queryset.filter(institution=self.institution)
+
+
+class IsAdminOrCoordinator(permissions.BasePermission):
+    """
+    Rejects (403) any authenticated, institution-scoped request from a
+    TEACHER-role user. Phase 6: the first place UserProfile.role is
+    actually enforced (it's existed since Phase 5b but nothing checked it
+    until now) -- mix into any view that manages Teachers/Subjects/Course
+    Requirements. Existing read-only endpoints (login, terms,
+    class-divisions, timetable-grid, solver-runs) deliberately do NOT get
+    this -- every authenticated role can still view those.
+
+    Must be combined with InstitutionScopedMixin (relies on
+    request.user.profile existing, same as HasInstitutionProfile) --
+    list it in permission_classes alongside HasInstitutionProfile, not
+    instead of it.
+    """
+
+    message = "Your role does not have permission to manage this resource."
+
+    def has_permission(self, request, view):
+        profile = getattr(request.user, "profile", None)
+        if profile is None:
+            return True  # let HasInstitutionProfile produce the 403 for this case
+        return profile.role in (profile.ADMIN, profile.COORDINATOR)
+
+
+class ManagedResourceMixin(InstitutionScopedMixin):
+    """InstitutionScopedMixin + IsAdminOrCoordinator -- the permission
+    stack for every Teacher/Subject/CourseRequirement view in Phase 6."""
+
+    permission_classes = [permissions.IsAuthenticated, HasInstitutionProfile, IsAdminOrCoordinator]

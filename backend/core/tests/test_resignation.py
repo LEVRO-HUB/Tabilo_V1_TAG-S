@@ -8,6 +8,7 @@ from core.models import (
     CourseRequirement,
     Department,
     Institution,
+    SolverRun,
     Subject,
     Teacher,
     TeacherSubjectEligibility,
@@ -283,3 +284,31 @@ class PreconditionTests(ResignationTestCase):
 
         with self.assertRaises(ValueError):
             recover_from_resignation(teacher, term_b)
+
+
+class PreCreatedSolverRunTests(ResignationTestCase):
+    def test_passing_a_pre_created_solver_run_updates_it_in_place_not_a_second_row(self):
+        institution = self.make_institution()
+        self.make_grid(institution)
+        term = self.make_term(institution)
+        department = Department.objects.create(institution=institution, name="Dept")
+        division = self.make_division(institution, department)
+
+        resigning_teacher = self.make_teacher(institution, "resigning@test.edu", is_active=False)
+        replacement_teacher = self.make_teacher(institution, "replacement@test.edu")
+        subject = self.make_subject(institution, department, "SUBA")
+        TeacherSubjectEligibility.objects.create(institution=institution, teacher=replacement_teacher, subject=subject)
+        self.make_requirement(institution, term, division, subject, periods_per_week=1, teacher=resigning_teacher)
+
+        solver_run = SolverRun.objects.create(
+            institution=institution, term=term, trigger=SolverRun.RESIGNATION_RECOVERY, status=SolverRun.PENDING,
+        )
+
+        result = recover_from_resignation(resigning_teacher, term, solver_run=solver_run)
+
+        self.assertEqual(result.status, "FEASIBLE")
+        self.assertEqual(SolverRun.objects.filter(term=term).count(), 1)
+        solver_run.refresh_from_db()
+        self.assertEqual(solver_run.status, SolverRun.SUCCESS)
+        self.assertEqual(solver_run.trigger, SolverRun.RESIGNATION_RECOVERY)
+        self.assertIsNotNone(solver_run.objective_value)
