@@ -32,12 +32,22 @@ async function extractErrorMessage(response) {
     return `Request failed (${response.status})`
   }
 
-  // DRF's two common shapes: {"detail": "..."} for permission/404/explicit
-  // errors, and {"non_field_errors": ["..."]} for serializer-level
-  // validation errors (e.g. login with bad credentials).
+  // DRF's common shapes: {"detail": "..."} for permission/404/explicit
+  // errors, {"non_field_errors": ["..."]} for serializer-level validation
+  // errors (e.g. login with bad credentials), and {"field_name": ["..."]}
+  // for a per-field validation error (e.g. an out-of-range value caught by
+  // a serializer field's own min_value/max_value, not a view's explicit
+  // 400) -- take the first message of the first field, still better than
+  // a generic fallback.
   if (data?.detail) return data.detail
   if (Array.isArray(data?.non_field_errors) && data.non_field_errors.length > 0) {
     return data.non_field_errors[0]
+  }
+  if (data && typeof data === 'object') {
+    const firstFieldErrors = Object.values(data)[0]
+    if (Array.isArray(firstFieldErrors) && firstFieldErrors.length > 0) {
+      return firstFieldErrors[0]
+    }
   }
   return `Request failed (${response.status})`
 }
@@ -143,4 +153,12 @@ export function createSubstitution(token, cellId, date, substituteTeacherId, rea
     token,
     body: { cell_id: cellId, date, substitute_teacher_id: substituteTeacherId, reason },
   })
+}
+
+export function getSolverWeightConfig(token) {
+  return request('/api/solver-weight-config/', { token })
+}
+
+export function updateSolverWeightConfig(token, patch) {
+  return request('/api/solver-weight-config/', { method: 'PATCH', token, body: patch })
 }

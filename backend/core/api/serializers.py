@@ -7,6 +7,7 @@ from core.models import (
     Department,
     Institution,
     SolverRun,
+    SolverWeightConfig,
     Subject,
     Substitution,
     Teacher,
@@ -93,6 +94,29 @@ class SubstitutionSerializer(serializers.ModelSerializer):
             "id", "original_cell", "date", "substitute_teacher", "substitute_teacher_name",
             "reason", "created_at",
         ]
+
+
+class SolverWeightConfigSerializer(serializers.ModelSerializer):
+    """
+    GET/PATCH /api/solver-weight-config/ response shape. institution is
+    intentionally excluded -- the view always resolves the singleton row
+    for self.institution, never a client-supplied one.
+
+    min_value/max_value=100 are explicit here because PositiveSmallIntegerField
+    only implies a lower bound of 0 by itself -- without these, an
+    out-of-range PATCH (e.g. 150) would sail through serializer validation
+    and only get caught by the model's solverweightconfig_weights_in_range
+    CheckConstraint as a raw IntegrityError. Declaring the upper bound here
+    means DRF rejects it with a normal 400 before the DB is ever touched.
+    """
+
+    gap_weight = serializers.IntegerField(min_value=0, max_value=100)
+    cognitive_load_weight = serializers.IntegerField(min_value=0, max_value=100)
+    fair_rotation_weight = serializers.IntegerField(min_value=0, max_value=100)
+
+    class Meta:
+        model = SolverWeightConfig
+        fields = ["gap_weight", "cognitive_load_weight", "fair_rotation_weight"]
 
 
 class SolverRunSerializer(serializers.ModelSerializer):

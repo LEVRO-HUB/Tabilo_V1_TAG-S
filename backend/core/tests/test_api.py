@@ -13,6 +13,7 @@ from core.models import (
     Department,
     Institution,
     SolverRun,
+    SolverWeightConfig,
     Subject,
     Substitution,
     Teacher,
@@ -956,4 +957,87 @@ class TodaysScheduleApiTests(SubstitutionApiTestCase):
 
     def test_requires_authentication(self):
         response = self.client.get(f"/api/todays-schedule/?date={self.DATE.isoformat()}")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class SolverWeightConfigApiTests(ApiTestCase):
+    def setUp(self):
+        self.institution_a = self.make_institution("Institution A")
+        self.institution_b = self.make_institution("Institution B")
+        self.admin_a = self.make_user(self.institution_a, "admin_a", role=UserProfile.ADMIN)
+        self.teacher_role_user = self.make_user(self.institution_a, "teacher_role_a", role=UserProfile.TEACHER)
+
+    def test_get_auto_creates_default_row_for_institution_with_none(self):
+        self.assertFalse(SolverWeightConfig.objects.filter(institution=self.institution_a).exists())
+        self.authenticate(self.admin_a)
+
+        response = self.client.get("/api/solver-weight-config/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {"gap_weight": 50, "cognitive_load_weight": 50, "fair_rotation_weight": 50})
+        self.assertTrue(SolverWeightConfig.objects.filter(institution=self.institution_a).exists())
+
+    def test_get_returns_existing_row_unchanged(self):
+        SolverWeightConfig.objects.create(
+            institution=self.institution_a, gap_weight=10, cognitive_load_weight=20, fair_rotation_weight=30
+        )
+        self.authenticate(self.admin_a)
+
+        response = self.client.get("/api/solver-weight-config/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["gap_weight"], 10)
+        self.assertEqual(response.data["cognitive_load_weight"], 20)
+        self.assertEqual(response.data["fair_rotation_weight"], 30)
+        self.assertEqual(SolverWeightConfig.objects.filter(institution=self.institution_a).count(), 1)
+
+    def test_patch_updates_correctly(self):
+        self.authenticate(self.admin_a)
+        response = self.client.patch(
+            "/api/solver-weight-config/", {"gap_weight": 80, "fair_rotation_weight": 5}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["gap_weight"], 80)
+        self.assertEqual(response.data["fair_rotation_weight"], 5)
+        self.assertEqual(response.data["cognitive_load_weight"], 50)  # untouched, default
+
+        config = SolverWeightConfig.objects.get(institution=self.institution_a)
+        self.assertEqual(config.gap_weight, 80)
+        self.assertEqual(config.fair_rotation_weight, 5)
+
+    def test_patch_out_of_range_value_returns_clean_400_not_500(self):
+        self.authenticate(self.admin_a)
+        response = self.client.patch("/api/solver-weight-config/", {"gap_weight": 150}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(SolverWeightConfig.objects.filter(institution=self.institution_a, gap_weight=150).exists())
+
+    def test_patch_negative_value_returns_clean_400(self):
+        self.authenticate(self.admin_a)
+        response = self.client.patch("/api/solver-weight-config/", {"fair_rotation_weight": -1}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_teacher_role_gets_403_on_get_and_patch(self):
+        self.authenticate(self.teacher_role_user)
+        get_response = self.client.get("/api/solver-weight-config/")
+        self.assertEqual(get_response.status_code, status.HTTP_403_FORBIDDEN)
+
+        patch_response = self.client.patch("/api/solver-weight-config/", {"gap_weight": 10}, format="json")
+        self.assertEqual(patch_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(SolverWeightConfig.objects.filter(institution=self.institution_a).exists())
+
+    def test_institution_scoping_a_and_b_are_independent(self):
+        SolverWeightConfig.objects.create(
+            institution=self.institution_b, gap_weight=99, cognitive_load_weight=99, fair_rotation_weight=99
+        )
+        self.authenticate(self.admin_a)
+
+        response = self.client.get("/api/solver-weight-config/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["gap_weight"], 50)  # institution A's own default, not B's row
+
+    def test_requires_authentication(self):
+        response = self.client.get("/api/solver-weight-config/")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

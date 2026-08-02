@@ -35,6 +35,9 @@ export default function Layout({ children }) {
                 <NavLink to="/todays-schedule" className={navLinkClassName}>
                   Today's Schedule
                 </NavLink>
+                <NavLink to="/solver-settings" className={navLinkClassName}>
+                  Solver Settings
+                </NavLink>
               </>
             )}
           </nav>

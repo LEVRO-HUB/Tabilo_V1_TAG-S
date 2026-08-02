@@ -7,6 +7,7 @@ import TeachersPage from './pages/TeachersPage'
 import SubjectsPage from './pages/SubjectsPage'
 import CourseRequirementsPage from './pages/CourseRequirementsPage'
 import TodaysSchedulePage from './pages/TodaysSchedulePage'
+import SolverSettingsPage from './pages/SolverSettingsPage'
 
 const MANAGEMENT_ROLES = ['ADMIN', 'COORDINATOR']
 
@@ -102,6 +103,18 @@ function App() {
               <ProtectedRoute>
                 <Layout>
                   <TodaysSchedulePage />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/solver-settings"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <ManagementRoute>
+                    <SolverSettingsPage />
+                  </ManagementRoute>
                 </Layout>
               </ProtectedRoute>
             }

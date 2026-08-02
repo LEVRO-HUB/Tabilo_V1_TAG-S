@@ -9,6 +9,7 @@ from core.api.views import (
     ResignationRecoveryTriggerView,
     SolverRunDetailView,
     SolverRunTriggerView,
+    SolverWeightConfigView,
     SubjectDetailView,
     SubjectListCreateView,
     SubstitutionCreateView,
@@ -50,4 +51,5 @@ urlpatterns = [
     ),
     path("substitutions/", SubstitutionCreateView.as_view(), name="api-substitutions"),
     path("todays-schedule/", TodaysScheduleView.as_view(), name="api-todays-schedule"),
+    path("solver-weight-config/", SolverWeightConfigView.as_view(), name="api-solver-weight-config"),
 ]

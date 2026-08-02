@@ -28,6 +28,7 @@ from core.api.serializers import (
     DepartmentSerializer,
     InstitutionSerializer,
     SolverRunSerializer,
+    SolverWeightConfigSerializer,
     SubjectSerializer,
     SubstitutionSerializer,
     TeacherSerializer,
@@ -40,6 +41,7 @@ from core.models import (
     Department,
     ElectiveGroup,
     SolverRun,
+    SolverWeightConfig,
     Subject,
     Substitution,
     Teacher,
@@ -691,3 +693,38 @@ class TodaysScheduleView(InstitutionScopedMixin, APIView):
             "date": date.isoformat(), "day_identifier": calendar_day.day_identifier, "is_working_day": True,
             "cells": cells_payload,
         })
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: solver weight configuration (Phase 3b's admin "sliders")
+# ---------------------------------------------------------------------------
+
+class SolverWeightConfigView(ManagedResourceMixin, APIView):
+    """
+    GET/PATCH /api/solver-weight-config/ -- singleton per institution
+    (SolverWeightConfig.institution is a OneToOneField, so there's no
+    <id> in the URL). ADMIN/COORDINATOR only, same tier as every other
+    Phase 6+ management endpoint.
+
+    GET get_or_creates the row for self.institution with the model's own
+    field defaults (50/50/50) if it doesn't exist yet -- this is exactly
+    what core.solver.build._resolve_weight_config() falls back to
+    in-memory for an institution with no row, so a first-time visit here
+    shows the same neutral values a solve would already be using, not an
+    empty form or a 404. PATCH persists it for real, which is the whole
+    point of this phase: solve_optimized() reads institution.solver_weight_config
+    directly, so a saved row here genuinely changes future solves --
+    nothing else in the request/response cycle simulates that, it just
+    stops the row from being absent.
+    """
+
+    def get(self, request):
+        config, _ = SolverWeightConfig.objects.get_or_create(institution=self.institution)
+        return Response(SolverWeightConfigSerializer(config).data)
+
+    def patch(self, request):
+        config, _ = SolverWeightConfig.objects.get_or_create(institution=self.institution)
+        serializer = SolverWeightConfigSerializer(config, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
