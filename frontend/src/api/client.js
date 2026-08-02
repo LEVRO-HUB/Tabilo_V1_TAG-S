@@ -126,3 +126,21 @@ export function triggerResignationRecovery(token, teacherId, termId) {
     body: { teacher_id: teacherId, term_id: termId },
   })
 }
+
+export function getTodaysSchedule(token, date) {
+  const params = date ? `?${new URLSearchParams({ date })}` : ''
+  return request(`/api/todays-schedule/${params}`, { token })
+}
+
+export function getSubstitutionSuggestions(token, cellId, date) {
+  const params = new URLSearchParams({ cell_id: cellId, date })
+  return request(`/api/substitution-suggestions/?${params}`, { token })
+}
+
+export function createSubstitution(token, cellId, date, substituteTeacherId, reason = '') {
+  return request('/api/substitutions/', {
+    method: 'POST',
+    token,
+    body: { cell_id: cellId, date, substitute_teacher_id: substituteTeacherId, reason },
+  })
+}

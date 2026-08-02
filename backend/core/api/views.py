@@ -7,9 +7,12 @@ Not a full CRUD API yet -- see core/api/permissions.py for the
 institution-scoping rules every endpoint here follows.
 """
 
+import datetime
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import ObtainAuthToken
@@ -26,9 +29,11 @@ from core.api.serializers import (
     InstitutionSerializer,
     SolverRunSerializer,
     SubjectSerializer,
+    SubstitutionSerializer,
     TeacherSerializer,
 )
 from core.models import (
+    AcademicCalendarDay,
     AcademicTerm,
     ClassDivision,
     CourseRequirement,
@@ -36,11 +41,13 @@ from core.models import (
     ElectiveGroup,
     SolverRun,
     Subject,
+    Substitution,
     Teacher,
     TimeSlot,
     TimetableCell,
 )
 from core.services.ingestion import ingest_course_requirement
+from core.services.substitution import record_substitution, suggest_substitutes
 from core.tasks import run_feasibility_solver, run_resignation_recovery
 
 
@@ -523,3 +530,164 @@ class ResignationRecoveryTriggerView(ManagedResourceMixin, APIView):
         return Response(
             {"id": solver_run.id, "status": solver_run.status}, status=status.HTTP_202_ACCEPTED,
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Smart Substitution (Proxy) Engine
+# ---------------------------------------------------------------------------
+
+class SubstitutionSuggestionsView(ManagedResourceMixin, APIView):
+    """
+    GET /api/substitution-suggestions/?cell_id=<id>&date=<YYYY-MM-DD>
+
+    Ranked candidate list from core.services.substitution.suggest_substitutes.
+    ADMIN/COORDINATOR only (ManagedResourceMixin) -- finding a substitute is
+    a management action, same tier as the Phase 6/7 endpoints, unlike the
+    read-only TodaysScheduleView below.
+    """
+
+    def get(self, request):
+        cell_id = request.query_params.get("cell_id")
+        date_str = request.query_params.get("date")
+        if not cell_id or not date_str:
+            return Response(
+                {"detail": "cell_id and date query parameters are required."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            date = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            return Response({"detail": "date must be in YYYY-MM-DD format."}, status=status.HTTP_400_BAD_REQUEST)
+
+        cell = get_object_or_404(
+            self.scope_queryset(TimetableCell.objects.select_related("subject", "teacher", "time_slot")), pk=cell_id
+        )
+
+        try:
+            candidates = suggest_substitutes(cell, date)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"candidates": candidates})
+
+
+class SubstitutionCreateView(ManagedResourceMixin, APIView):
+    """
+    POST /api/substitutions/ {"cell_id", "date", "substitute_teacher_id", "reason"}
+
+    Delegates to core.services.substitution.record_substitution, which
+    re-validates the chosen substitute server-side -- never trusts that a
+    client-supplied teacher id came from (or is still valid per) a prior
+    GET /api/substitution-suggestions/ call.
+    """
+
+    def post(self, request):
+        data = request.data
+        cell_id = data.get("cell_id")
+        date_str = data.get("date")
+        substitute_teacher_id = data.get("substitute_teacher_id")
+        if not cell_id or not date_str or not substitute_teacher_id:
+            return Response(
+                {"detail": "cell_id, date, and substitute_teacher_id are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            date = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            return Response({"detail": "date must be in YYYY-MM-DD format."}, status=status.HTTP_400_BAD_REQUEST)
+
+        cell = get_object_or_404(self.scope_queryset(TimetableCell.objects.all()), pk=cell_id)
+        substitute_teacher = get_object_or_404(self.scope_queryset(Teacher.objects.all()), pk=substitute_teacher_id)
+
+        try:
+            substitution = record_substitution(cell, date, substitute_teacher, reason=data.get("reason", ""))
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(SubstitutionSerializer(substitution).data, status=status.HTTP_201_CREATED)
+
+
+class TodaysScheduleView(InstitutionScopedMixin, APIView):
+    """
+    GET /api/todays-schedule/?date=<YYYY-MM-DD> (defaults to today)
+
+    Deliberately InstitutionScopedMixin, not ManagedResourceMixin: a
+    TEACHER-role user can read this. "Who's covering what today" is
+    useful to any staff member, not a management action -- same reasoning
+    as timetable-grid and solver-runs staying open to every authenticated
+    role. Finding/recording a substitute (the two views above) stays
+    ADMIN/COORDINATOR only.
+
+    Resolves the date to a day_identifier via AcademicCalendarDay and
+    returns every TimetableCell across the whole institution (all class
+    divisions) for that day, each annotated with its existing Substitution
+    (if any).
+    """
+
+    def get(self, request):
+        date_str = request.query_params.get("date")
+        if date_str:
+            try:
+                date = datetime.date.fromisoformat(date_str)
+            except ValueError:
+                return Response(
+                    {"detail": "date must be in YYYY-MM-DD format."}, status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            date = timezone.localdate()
+
+        def not_a_working_day(reason):
+            return Response({
+                "date": date.isoformat(), "day_identifier": None, "is_working_day": False,
+                "reason": reason, "cells": [],
+            })
+
+        calendar_day = AcademicCalendarDay.objects.filter(institution=self.institution, date=date).first()
+        if calendar_day is None:
+            return not_a_working_day(f"No calendar entry exists for {date.isoformat()}.")
+        if calendar_day.day_identifier is None:
+            return not_a_working_day(
+                calendar_day.label or ("Holiday" if calendar_day.is_holiday else "Not a working day")
+            )
+
+        active_term = AcademicTerm.objects.filter(institution=self.institution, is_active=True).first()
+        if active_term is None:
+            return not_a_working_day("No active term is configured for this institution.")
+
+        cells = TimetableCell.objects.filter(
+            institution=self.institution, term=active_term, time_slot__day_identifier=calendar_day.day_identifier,
+        ).select_related("class_division", "subject", "teacher", "time_slot").order_by(
+            "time_slot__period_number", "class_division__name", "class_division__section"
+        )
+
+        substitutions_by_cell_id = {
+            s.original_cell_id: s
+            for s in Substitution.objects.filter(
+                date=date, original_cell__in=cells
+            ).select_related("substitute_teacher")
+        }
+
+        cells_payload = []
+        for cell in cells:
+            substitution = substitutions_by_cell_id.get(cell.id)
+            cells_payload.append({
+                "cell_id": cell.id,
+                "class_division": f"{cell.class_division.name} - {cell.class_division.section}",
+                "subject": cell.subject.name,
+                "teacher_id": cell.teacher_id,
+                "teacher": cell.teacher.name,
+                "time_slot": {
+                    "period_number": cell.time_slot.period_number,
+                    "start_time": cell.time_slot.start_time,
+                    "end_time": cell.time_slot.end_time,
+                },
+                "substitution": {
+                    "substitute_teacher_id": substitution.substitute_teacher_id,
+                    "substitute_teacher_name": substitution.substitute_teacher.name,
+                    "reason": substitution.reason,
+                } if substitution is not None else None,
+            })
+
+        return Response({
+            "date": date.isoformat(), "day_identifier": calendar_day.day_identifier, "is_working_day": True,
+            "cells": cells_payload,
+        })

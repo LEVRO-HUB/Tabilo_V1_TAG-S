@@ -6,6 +6,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from core.models import (
+    AcademicCalendarDay,
     AcademicTerm,
     ClassDivision,
     CourseRequirement,
@@ -13,7 +14,9 @@ from core.models import (
     Institution,
     SolverRun,
     Subject,
+    Substitution,
     Teacher,
+    TeacherSubjectEligibility,
     TimeGridConfig,
     TimetableCell,
     UserProfile,
@@ -746,4 +749,211 @@ class ResignationRecoveryTriggerTests(ApiTestCase):
             {"teacher_id": self.resigned_teacher_a.id, "term_id": self.term_a.id},
             format="json",
         )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class SubstitutionApiTestCase(ApiTestCase):
+    """Shared fixture for the three Phase 8 endpoints: an institution with
+    a real cell on a specific calendar date."""
+
+    DATE = datetime.date(2026, 8, 3)
+
+    def setUp(self):
+        self.institution_a = self.make_institution("Institution A")
+        self.slots = self.make_grid(self.institution_a, periods_per_day=3)
+        AcademicCalendarDay.objects.create(institution=self.institution_a, date=self.DATE, day_identifier=1)
+        self.term_a = self.make_term(self.institution_a, "Term A")
+        self.term_a.is_active = True
+        self.term_a.save(update_fields=["is_active"])
+        self.department_a = Department.objects.create(institution=self.institution_a, name="Dept A")
+        self.division_a = ClassDivision.objects.create(
+            institution=self.institution_a, department=self.department_a, name="Div A", section="A"
+        )
+        self.subject_a = Subject.objects.create(
+            institution=self.institution_a, department=self.department_a, name="Math", code="MATH1"
+        )
+        self.original_teacher = Teacher.objects.create(
+            institution=self.institution_a, name="Original Teacher", email="original@test.edu",
+            max_periods_per_day=6, max_periods_per_week=30,
+        )
+        self.replacement_teacher = Teacher.objects.create(
+            institution=self.institution_a, name="Replacement Teacher", email="replacement@test.edu",
+            max_periods_per_day=6, max_periods_per_week=30,
+        )
+        self.slot_day1_period1 = next(s for s in self.slots if s.day_identifier == 1 and s.period_number == 1)
+        self.cell = TimetableCell.objects.create(
+            institution=self.institution_a, term=self.term_a, class_division=self.division_a,
+            time_slot=self.slot_day1_period1, subject=self.subject_a, teacher=self.original_teacher,
+        )
+
+        self.institution_b = self.make_institution("Institution B")
+        self.admin_a = self.make_user(self.institution_a, "admin_a", role=UserProfile.ADMIN)
+        self.teacher_role_user = self.make_user(self.institution_a, "teacher_role_a", role=UserProfile.TEACHER)
+
+
+class SubstitutionSuggestionsApiTests(SubstitutionApiTestCase):
+    def test_admin_gets_ranked_suggestions(self):
+        TeacherSubjectEligibility.objects.create(
+            institution=self.institution_a, teacher=self.replacement_teacher, subject=self.subject_a
+        )
+        self.authenticate(self.admin_a)
+        response = self.client.get(
+            f"/api/substitution-suggestions/?cell_id={self.cell.id}&date={self.DATE.isoformat()}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        candidate_ids = [c["teacher_id"] for c in response.data["candidates"]]
+        self.assertIn(self.replacement_teacher.id, candidate_ids)
+        self.assertNotIn(self.original_teacher.id, candidate_ids)
+
+    def test_teacher_role_gets_403(self):
+        self.authenticate(self.teacher_role_user)
+        response = self.client.get(
+            f"/api/substitution-suggestions/?cell_id={self.cell.id}&date={self.DATE.isoformat()}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_foreign_cell_id_returns_404(self):
+        department_b = Department.objects.create(institution=self.institution_b, name="Dept B")
+        division_b = ClassDivision.objects.create(
+            institution=self.institution_b, department=department_b, name="Div B", section="A"
+        )
+        subject_b = Subject.objects.create(
+            institution=self.institution_b, department=department_b, name="Physics", code="PHY1"
+        )
+        teacher_b = Teacher.objects.create(
+            institution=self.institution_b, name="Teacher B", email="teacherb@test.edu",
+            max_periods_per_day=6, max_periods_per_week=30,
+        )
+        slots_b = self.make_grid(self.institution_b, periods_per_day=3)
+        cell_b = TimetableCell.objects.create(
+            institution=self.institution_b, term=self.make_term(self.institution_b, "Term B"),
+            class_division=division_b, time_slot=slots_b[0], subject=subject_b, teacher=teacher_b,
+        )
+        self.authenticate(self.admin_a)
+        response = self.client.get(
+            f"/api/substitution-suggestions/?cell_id={cell_b.id}&date={self.DATE.isoformat()}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_missing_params_returns_400(self):
+        self.authenticate(self.admin_a)
+        response = self.client.get("/api/substitution-suggestions/")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_non_working_day_returns_400_with_real_reason(self):
+        self.authenticate(self.admin_a)
+        off_date = self.DATE + datetime.timedelta(days=100)
+        response = self.client.get(
+            f"/api/substitution-suggestions/?cell_id={self.cell.id}&date={off_date.isoformat()}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("calendar entry", response.data["detail"])
+
+
+class SubstitutionCreateApiTests(SubstitutionApiTestCase):
+    def test_admin_can_record_a_substitution(self):
+        self.authenticate(self.admin_a)
+        response = self.client.post(
+            "/api/substitutions/",
+            {
+                "cell_id": self.cell.id, "date": self.DATE.isoformat(),
+                "substitute_teacher_id": self.replacement_teacher.id, "reason": "Sick",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["substitute_teacher_name"], "Replacement Teacher")
+        self.assertEqual(Substitution.objects.count(), 1)
+
+    def test_teacher_role_gets_403_without_side_effects(self):
+        self.authenticate(self.teacher_role_user)
+        response = self.client.post(
+            "/api/substitutions/",
+            {"cell_id": self.cell.id, "date": self.DATE.isoformat(), "substitute_teacher_id": self.replacement_teacher.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(Substitution.objects.count(), 0)
+
+    def test_invalid_substitute_returns_clean_400_not_500(self):
+        # original_teacher is themself excluded -- they're the cell's own teacher.
+        self.authenticate(self.admin_a)
+        response = self.client.post(
+            "/api/substitutions/",
+            {"cell_id": self.cell.id, "date": self.DATE.isoformat(), "substitute_teacher_id": self.original_teacher.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Substitution.objects.count(), 0)
+
+    def test_foreign_substitute_teacher_id_returns_404(self):
+        teacher_b = Teacher.objects.create(
+            institution=self.institution_b, name="Teacher B", email="teacherb2@test.edu",
+            max_periods_per_day=6, max_periods_per_week=30,
+        )
+        self.authenticate(self.admin_a)
+        response = self.client.post(
+            "/api/substitutions/",
+            {"cell_id": self.cell.id, "date": self.DATE.isoformat(), "substitute_teacher_id": teacher_b.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_requires_authentication(self):
+        response = self.client.post(
+            "/api/substitutions/",
+            {"cell_id": self.cell.id, "date": self.DATE.isoformat(), "substitute_teacher_id": self.replacement_teacher.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class TodaysScheduleApiTests(SubstitutionApiTestCase):
+    def test_admin_sees_schedule_for_date(self):
+        self.authenticate(self.admin_a)
+        response = self.client.get(f"/api/todays-schedule/?date={self.DATE.isoformat()}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["is_working_day"])
+        self.assertEqual(response.data["day_identifier"], 1)
+        cell_ids = [c["cell_id"] for c in response.data["cells"]]
+        self.assertIn(self.cell.id, cell_ids)
+
+    def test_teacher_role_can_also_read_it(self):
+        """Deliberate choice (see TodaysScheduleView's docstring):
+        read-only, open to every authenticated role, same as
+        timetable-grid -- not gated by ManagedResourceMixin."""
+        self.authenticate(self.teacher_role_user)
+        response = self.client.get(f"/api/todays-schedule/?date={self.DATE.isoformat()}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_non_working_day_returns_empty_with_clear_reason(self):
+        holiday = self.DATE + datetime.timedelta(days=1)
+        AcademicCalendarDay.objects.create(
+            institution=self.institution_a, date=holiday, day_identifier=None, is_holiday=True, label="Founders Day"
+        )
+        self.authenticate(self.admin_a)
+        response = self.client.get(f"/api/todays-schedule/?date={holiday.isoformat()}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["is_working_day"])
+        self.assertEqual(response.data["cells"], [])
+        self.assertEqual(response.data["reason"], "Founders Day")
+
+    def test_reflects_an_existing_substitution(self):
+        Substitution.objects.create(
+            institution=self.institution_a, term=self.term_a, original_cell=self.cell, date=self.DATE,
+            substitute_teacher=self.replacement_teacher, reason="Sick",
+        )
+        self.authenticate(self.admin_a)
+        response = self.client.get(f"/api/todays-schedule/?date={self.DATE.isoformat()}")
+        cell_row = next(c for c in response.data["cells"] if c["cell_id"] == self.cell.id)
+        self.assertIsNotNone(cell_row["substitution"])
+        self.assertEqual(cell_row["substitution"]["substitute_teacher_name"], "Replacement Teacher")
+
+    def test_defaults_to_today_when_date_omitted(self):
+        self.authenticate(self.admin_a)
+        response = self.client.get("/api/todays-schedule/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_requires_authentication(self):
+        response = self.client.get(f"/api/todays-schedule/?date={self.DATE.isoformat()}")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

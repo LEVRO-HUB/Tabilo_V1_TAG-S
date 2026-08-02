@@ -546,6 +546,42 @@ class TimetableCell(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# Same-day substitution (Phase 8): an overlay on top of the regular
+# timetable, not a change to it
+# ---------------------------------------------------------------------------
+
+class Substitution(models.Model):
+    """
+    Records a substitute teacher covering one TimetableCell on one real
+    calendar date -- the regular CourseRequirement/TimetableCell rows are
+    never touched, so the substitution automatically stops applying once
+    the date passes. Built by core/services/substitution.py, which uses
+    AcademicCalendarDay (Phase 4c) to translate the real date into the
+    abstract day_identifier the rest of the schema speaks.
+    """
+    institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="substitutions")
+    term = models.ForeignKey(AcademicTerm, on_delete=models.CASCADE, related_name="substitutions")
+    original_cell = models.ForeignKey(TimetableCell, on_delete=models.CASCADE, related_name="substitutions")
+    date = models.DateField()
+    substitute_teacher = models.ForeignKey(
+        Teacher, on_delete=models.CASCADE, related_name="substitute_assignments"
+    )
+    reason = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "institution"]
+        unique_together = ("original_cell", "date")
+        indexes = [
+            models.Index(fields=["institution", "date"]),
+            models.Index(fields=["substitute_teacher", "date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.original_cell} on {self.date} -> {self.substitute_teacher.name}"
+
+
+# ---------------------------------------------------------------------------
 # Solver run tracking (Phase 3)
 # ---------------------------------------------------------------------------
 

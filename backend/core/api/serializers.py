@@ -8,6 +8,7 @@ from core.models import (
     Institution,
     SolverRun,
     Subject,
+    Substitution,
     Teacher,
 )
 
@@ -79,6 +80,19 @@ class CourseRequirementSerializer(serializers.ModelSerializer):
 
     def get_class_division_name(self, obj):
         return f"{obj.class_division.name} - {obj.class_division.section}"
+
+
+class SubstitutionSerializer(serializers.ModelSerializer):
+    """POST /api/substitutions/ response shape."""
+
+    substitute_teacher_name = serializers.CharField(source="substitute_teacher.name", read_only=True)
+
+    class Meta:
+        model = Substitution
+        fields = [
+            "id", "original_cell", "date", "substitute_teacher", "substitute_teacher_name",
+            "reason", "created_at",
+        ]
 
 
 class SolverRunSerializer(serializers.ModelSerializer):

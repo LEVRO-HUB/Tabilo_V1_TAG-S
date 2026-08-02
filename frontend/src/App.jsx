@@ -6,6 +6,7 @@ import TimetableGridPage from './pages/TimetableGridPage'
 import TeachersPage from './pages/TeachersPage'
 import SubjectsPage from './pages/SubjectsPage'
 import CourseRequirementsPage from './pages/CourseRequirementsPage'
+import TodaysSchedulePage from './pages/TodaysSchedulePage'
 
 const MANAGEMENT_ROLES = ['ADMIN', 'COORDINATOR']
 
@@ -84,6 +85,23 @@ function App() {
                   <ManagementRoute>
                     <CourseRequirementsPage />
                   </ManagementRoute>
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          {/* Deliberately NOT wrapped in ManagementRoute -- the backend's
+              TodaysScheduleView is intentionally open to every authenticated
+              role (see its docstring): "who's covering what today" is
+              useful to a TEACHER too, same as the timetable grid. Only the
+              nav link is ADMIN/COORDINATOR-only (Layout.jsx); the page
+              itself hides the "Find substitute" action (a management
+              action) from non-managers rather than blocking the whole page. */}
+          <Route
+            path="/todays-schedule"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <TodaysSchedulePage />
                 </Layout>
               </ProtectedRoute>
             }

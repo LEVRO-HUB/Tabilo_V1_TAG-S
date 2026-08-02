@@ -16,6 +16,7 @@ from core.models import (
     CourseRequirement,
     FacultyDutyBlock,
     TimetableCell,
+    Substitution,
     SolverRun,
     SolverWeightConfig,
 )
@@ -115,6 +116,13 @@ class TimetableCellAdmin(admin.ModelAdmin):
         "elective_group", "is_locked", "locked_reason",
     )
     list_filter = ("institution", "term", "is_locked", "locked_reason")
+
+
+@admin.register(Substitution)
+class SubstitutionAdmin(admin.ModelAdmin):
+    list_display = ("original_cell", "date", "substitute_teacher", "institution", "term")
+    list_filter = ("institution", "term", "date")
+    search_fields = ("substitute_teacher__name", "reason")
 
 
 @admin.register(SolverRun)

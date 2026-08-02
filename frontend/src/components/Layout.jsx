@@ -32,6 +32,9 @@ export default function Layout({ children }) {
                 <NavLink to="/course-requirements" className={navLinkClassName}>
                   Course Requirements
                 </NavLink>
+                <NavLink to="/todays-schedule" className={navLinkClassName}>
+                  Today's Schedule
+                </NavLink>
               </>
             )}
           </nav>

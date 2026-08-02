@@ -11,10 +11,13 @@ from core.api.views import (
     SolverRunTriggerView,
     SubjectDetailView,
     SubjectListCreateView,
+    SubstitutionCreateView,
+    SubstitutionSuggestionsView,
     TeacherDetailView,
     TeacherListCreateView,
     TermListView,
     TimetableGridView,
+    TodaysScheduleView,
 )
 
 urlpatterns = [
@@ -40,4 +43,11 @@ urlpatterns = [
         CourseRequirementDetailView.as_view(),
         name="api-course-requirement-detail",
     ),
+    path(
+        "substitution-suggestions/",
+        SubstitutionSuggestionsView.as_view(),
+        name="api-substitution-suggestions",
+    ),
+    path("substitutions/", SubstitutionCreateView.as_view(), name="api-substitutions"),
+    path("todays-schedule/", TodaysScheduleView.as_view(), name="api-todays-schedule"),
 ]
