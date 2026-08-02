@@ -162,3 +162,45 @@ export function getSolverWeightConfig(token) {
 export function updateSolverWeightConfig(token, patch) {
   return request('/api/solver-weight-config/', { method: 'PATCH', token, body: patch })
 }
+
+// Binary authenticated downloads (PDF/Excel exports) can't go through
+// request() -- there's no JSON body to parse on success, and the browser
+// needs a real file save, not a returned value. Same error-handling
+// convention as request()/extractErrorMessage() for the non-2xx case.
+async function downloadFile(path, token) {
+  const response = await fetch(`${BASE_URL}${path}`, {
+    headers: token ? { Authorization: `Token ${token}` } : {},
+  })
+
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response))
+  }
+
+  const blob = await response.blob()
+  const filename = extractFilename(response.headers.get('Content-Disposition')) ?? 'download'
+
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(objectUrl)
+}
+
+function extractFilename(contentDisposition) {
+  if (!contentDisposition) return null
+  const match = /filename="?([^";]+)"?/.exec(contentDisposition)
+  return match ? match[1] : null
+}
+
+export function downloadTimetablePdf(token, termId, classDivisionId) {
+  const params = new URLSearchParams({ term_id: termId, class_division_id: classDivisionId })
+  return downloadFile(`/api/exports/timetable.pdf?${params}`, token)
+}
+
+export function downloadTimetableExcel(token, termId, classDivisionId) {
+  const params = new URLSearchParams({ term_id: termId, class_division_id: classDivisionId })
+  return downloadFile(`/api/exports/timetable.xlsx?${params}`, token)
+}

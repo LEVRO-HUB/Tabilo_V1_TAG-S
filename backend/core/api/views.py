@@ -11,6 +11,7 @@ import datetime
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status
@@ -45,11 +46,11 @@ from core.models import (
     Subject,
     Substitution,
     Teacher,
-    TimeSlot,
     TimetableCell,
 )
 from core.services.ingestion import ingest_course_requirement
 from core.services.substitution import record_substitution, suggest_substitutes
+from core.services.timetable_export import build_grid_data, export_filename, render_timetable_pdf, render_timetable_xlsx
 from core.tasks import run_feasibility_solver, run_resignation_recovery
 
 
@@ -101,6 +102,28 @@ class ClassDivisionListView(InstitutionScopedMixin, generics.ListAPIView):
         ).order_by("name", "section")
 
 
+def _resolve_grid_params(view, request):
+    """
+    Shared by TimetableGridView and the Phase 10 export views below:
+    validates term_id/class_division_id are present and resolves them
+    institution-scoped (a foreign id from another institution 404s).
+    Returns (term, class_division, None) on success, or
+    (None, None, error_response) on failure -- callers should return
+    error_response immediately when it isn't None.
+    """
+    term_id = request.query_params.get("term_id")
+    class_division_id = request.query_params.get("class_division_id")
+    if not term_id or not class_division_id:
+        return None, None, Response(
+            {"detail": "Both term_id and class_division_id query parameters are required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    term = get_object_or_404(view.scope_queryset(AcademicTerm.objects.all()), pk=term_id)
+    class_division = get_object_or_404(view.scope_queryset(ClassDivision.objects.all()), pk=class_division_id)
+    return term, class_division, None
+
+
 class TimetableGridView(InstitutionScopedMixin, APIView):
     """
     GET /api/timetable-grid/?term_id=<id>&class_division_id=<id>
@@ -108,60 +131,61 @@ class TimetableGridView(InstitutionScopedMixin, APIView):
     Every TimeSlot for the institution (including breaks, so the frontend
     can render them as visual gaps without separate logic), each annotated
     with the TimetableCell for the requested class_division+term, or null.
+
+    Data assembly is core.services.timetable_export.build_grid_data (Phase
+    10) -- the Phase 10 PDF/Excel export views build from the exact same
+    function, so they can never drift from what this JSON response (and
+    therefore the on-screen grid) shows.
     """
 
     def get(self, request):
-        term_id = request.query_params.get("term_id")
-        class_division_id = request.query_params.get("class_division_id")
-        if not term_id or not class_division_id:
-            return Response(
-                {"detail": "Both term_id and class_division_id query parameters are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        term, class_division, error_response = _resolve_grid_params(self, request)
+        if error_response is not None:
+            return error_response
 
-        term = get_object_or_404(self.scope_queryset(AcademicTerm.objects.all()), pk=term_id)
-        class_division = get_object_or_404(
-            self.scope_queryset(ClassDivision.objects.all()), pk=class_division_id
+        return Response(build_grid_data(self.institution, term, class_division))
+
+
+class TimetableGridPdfExportView(InstitutionScopedMixin, APIView):
+    """
+    GET /api/exports/timetable.pdf?term_id=<id>&class_division_id=<id>
+
+    Same scoping/params as TimetableGridView, and deliberately the SAME
+    permission tier (InstitutionScopedMixin, not ManagedResourceMixin) --
+    a TEACHER exporting their own class's printed schedule is reading
+    data they can already see on screen, not a management action.
+    """
+
+    def get(self, request):
+        term, class_division, error_response = _resolve_grid_params(self, request)
+        if error_response is not None:
+            return error_response
+
+        grid_data = build_grid_data(self.institution, term, class_division)
+        pdf_bytes = render_timetable_pdf(grid_data)
+
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{export_filename(grid_data, "pdf")}"'
+        return response
+
+
+class TimetableGridExcelExportView(InstitutionScopedMixin, APIView):
+    """GET /api/exports/timetable.xlsx?term_id=<id>&class_division_id=<id>
+    -- same shape as TimetableGridPdfExportView, .xlsx instead of .pdf."""
+
+    def get(self, request):
+        term, class_division, error_response = _resolve_grid_params(self, request)
+        if error_response is not None:
+            return error_response
+
+        grid_data = build_grid_data(self.institution, term, class_division)
+        xlsx_bytes = render_timetable_xlsx(grid_data)
+
+        response = HttpResponse(
+            xlsx_bytes, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
-        slots = TimeSlot.objects.filter(institution=self.institution).order_by("day_identifier", "period_number")
-
-        # Avoid N+1: one query for every relevant TimetableCell, keyed by
-        # time_slot_id, then attach in-memory while iterating slots below --
-        # not a per-slot query.
-        cells_by_slot_id = {
-            cell.time_slot_id: cell
-            for cell in TimetableCell.objects.filter(
-                term=term, class_division=class_division
-            ).select_related("subject", "teacher")
-        }
-
-        slots_payload = []
-        for slot in slots:
-            cell = cells_by_slot_id.get(slot.id)
-            slots_payload.append({
-                "id": slot.id,
-                "day_identifier": slot.day_identifier,
-                "period_number": slot.period_number,
-                "start_time": slot.start_time,
-                "end_time": slot.end_time,
-                "is_break": slot.is_break,
-                "cell": {
-                    "subject": cell.subject.name,
-                    "teacher": cell.teacher.name,
-                    "is_locked": cell.is_locked,
-                    "elective_group_id": cell.elective_group_id,
-                } if cell is not None else None,
-            })
-
-        return Response({
-            "institution": InstitutionSerializer(self.institution).data,
-            "term": {"id": term.id, "name": term.name, "is_active": term.is_active},
-            "class_division": {
-                "id": class_division.id, "name": class_division.name, "section": class_division.section,
-            },
-            "slots": slots_payload,
-        })
+        response["Content-Disposition"] = f'attachment; filename="{export_filename(grid_data, "xlsx")}"'
+        return response
 
 
 class SolverRunTriggerView(InstitutionScopedMixin, APIView):

@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { getClassDivisions, getTerms, getTimetableGrid, triggerSolverRun } from '../api/client'
+import {
+  downloadTimetableExcel,
+  downloadTimetablePdf,
+  getClassDivisions,
+  getTerms,
+  getTimetableGrid,
+  triggerSolverRun,
+} from '../api/client'
 import { useSolverRunPolling } from '../hooks/useSolverRunPolling'
 import { dayLabel, pivotSlotsToGrid } from '../utils/timetableGrid'
 
@@ -18,6 +25,10 @@ export default function TimetableGridPage() {
   const [loadingGrid, setLoadingGrid] = useState(false)
   const [gridError, setGridError] = useState('')
   const [gridRefreshKey, setGridRefreshKey] = useState(0)
+
+  const [downloadingFormat, setDownloadingFormat] = useState(null) // null | 'pdf' | 'xlsx'
+  const [downloadError, setDownloadError] = useState('')
+  const hasGeneratedCells = grid?.slots?.some((slot) => slot.cell !== null) ?? false
 
   const {
     status: solverStatus,
@@ -96,12 +107,29 @@ export default function TimetableGridPage() {
   // timeout as soon as its runId changes (including to null, here).
   useEffect(() => {
     resetPolling()
+    setDownloadError('')
   }, [selectedTermId, selectedClassDivisionId, resetPolling])
 
   async function handleGenerate() {
     triggerPolling(() => triggerSolverRun(token, selectedTermId), {
       onSuccess: () => setGridRefreshKey((key) => key + 1),
     })
+  }
+
+  async function handleDownload(format) {
+    setDownloadError('')
+    setDownloadingFormat(format)
+    try {
+      if (format === 'pdf') {
+        await downloadTimetablePdf(token, selectedTermId, selectedClassDivisionId)
+      } else {
+        await downloadTimetableExcel(token, selectedTermId, selectedClassDivisionId)
+      }
+    } catch (err) {
+      setDownloadError(err.message)
+    } finally {
+      setDownloadingFormat(null)
+    }
   }
 
   if (loadingOptions) {
@@ -165,6 +193,32 @@ export default function TimetableGridPage() {
           {isGenerating ? 'Generating…' : 'Generate Timetable'}
         </button>
 
+        <div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => handleDownload('pdf')}
+              disabled={!hasGeneratedCells || downloadingFormat !== null}
+              title={!hasGeneratedCells ? 'Generate a timetable first -- nothing to export yet.' : undefined}
+              className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {downloadingFormat === 'pdf' ? 'Downloading…' : 'Download PDF'}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDownload('xlsx')}
+              disabled={!hasGeneratedCells || downloadingFormat !== null}
+              title={!hasGeneratedCells ? 'Generate a timetable first -- nothing to export yet.' : undefined}
+              className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {downloadingFormat === 'xlsx' ? 'Downloading…' : 'Download Excel'}
+            </button>
+          </div>
+          {!hasGeneratedCells && !loadingGrid && (
+            <p className="mt-1 text-xs text-gray-400">Generate a timetable first to enable exports.</p>
+          )}
+        </div>
+
         {isGenerating && (
           <p className="text-sm text-gray-500" role="status">
             Generating timetable… this can take up to 30 seconds.
@@ -175,6 +229,12 @@ export default function TimetableGridPage() {
       {solverError && (
         <p role="alert" className="mb-4 text-sm text-red-600">
           {solverError}
+        </p>
+      )}
+
+      {downloadError && (
+        <p role="alert" className="mb-4 text-sm text-red-600">
+          {downloadError}
         </p>
       )}
 

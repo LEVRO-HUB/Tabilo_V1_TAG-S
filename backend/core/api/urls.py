@@ -17,6 +17,8 @@ from core.api.views import (
     TeacherDetailView,
     TeacherListCreateView,
     TermListView,
+    TimetableGridExcelExportView,
+    TimetableGridPdfExportView,
     TimetableGridView,
     TodaysScheduleView,
 )
@@ -52,4 +54,14 @@ urlpatterns = [
     path("substitutions/", SubstitutionCreateView.as_view(), name="api-substitutions"),
     path("todays-schedule/", TodaysScheduleView.as_view(), name="api-todays-schedule"),
     path("solver-weight-config/", SolverWeightConfigView.as_view(), name="api-solver-weight-config"),
+    path(
+        "exports/timetable.pdf",
+        TimetableGridPdfExportView.as_view(),
+        name="api-exports-timetable-pdf",
+    ),
+    path(
+        "exports/timetable.xlsx",
+        TimetableGridExcelExportView.as_view(),
+        name="api-exports-timetable-xlsx",
+    ),
 ]

@@ -125,6 +125,12 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
+# By default, CORS only exposes a small set of "simple" response headers to
+# JS (Content-Type, etc.) -- without this, frontend/src/api/client.js's
+# downloadFile() can't read Content-Disposition to name the saved file, even
+# though the server sends it; the browser just hides it from fetch().
+CORS_EXPOSE_HEADERS = ["Content-Disposition"]
+
 # --- Password validation ------------------------------------------------------
 
 AUTH_PASSWORD_VALIDATORS = [
